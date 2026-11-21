@@ -34,8 +34,8 @@ Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
   -connected=on`, then `-resolution=2560x1440 -hiDPI=on`), waits for a 5120-px-wide CG display, then streams.
   Stop (menu, re-launching the app, or receiver closing) disconnects the virtual screen and quits BetterDisplay
   if FiveK launched it. Settings via `defaults` (see README).
-- Sender: ScreenCaptureKit (NV12, 709 matrix) -> VideoToolbox HEVC hardware encode (low-latency RC with
-  fallback, no reordering, MaxFrameDelayCount 0, no periodic keyframes, ~60 Mbps) -> TCP (Network.framework,
+- Sender: ScreenCaptureKit (NV12, 709 matrix, captureResolution .best, no cursor) -> VideoToolbox HEVC
+  hardware encode (low-latency RC with fallback, no reordering, no periodic keyframes, 100 Mbps) -> TCP (Network.framework,
   noDelay, interactiveVideo). Bonjour `_fivek._tcp` or Host setting.
 - Receiver: "FiveK Receiver.app" (universal x86_64+arm64, macOS 12+, ad-hoc signed). Opened by the user it is a
   self-installer: copies itself to ~/Applications (avoids Gatekeeper translocation), writes
@@ -49,9 +49,22 @@ Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
 - Wire format: [type u8][len u32 BE][payload]. type 1 = parameter sets
   ([count u8] then [len u16 BE][bytes] each, sent before every keyframe);
   type 2 = frame ([flags u8, 1=key][HEVC NALs, 4-byte length-prefixed]).
+  type 3 = cursor position ([x u16][y u16] fraction*65535, [visible u8]), ~120 Hz, on change.
+  type 4 = cursor image ([hotX][hotY][w][h] u16 in 1/100 pt, then PNG), polled at 20 Hz via
+  NSCursor.currentSystemCursor (called by selector; to-be-deprecated). Capture uses showsCursor=false.
   Back-channel (receiver -> sender): 0x01 per type-2 message received (ack), 0x4B ('K') = keyframe request.
-  Sender keeps <= 2 unacked frames; frames captured while full are skipped before encoding, but the newest
-  one is held and sent when a slot frees, so the final screen state always arrives.
+  Flow control: always 2 unacked frames, up to 5 while unacked bytes < 600 KB. Frames captured while full are
+  skipped before encoding, but the newest is held and sent when a slot frees.
+  Refinement: after 120 ms with no new frame, the last frame is re-encoded up to 3 times (low-latency RC gives
+  each frame the same budget, so a still screen would otherwise stay soft). Default bitrate 100 Mbps.
+
+## First real test (2026-11-21, Wi-Fi)
+Worked; sharper than AirPlay but softer than native, laggy cursor. Log: max 37 fps with 15-24 skipped/s
+(capture ~55-60), avg 1.4 Mbps, peak 25 Mbps => limited by the 2-frame window x ~57 ms round trip, not
+bandwidth. Low-latency RC accepted; MaxFrameDelayCount and PrioritizeEncodingSpeedOverQuality return -12900
+(not supported with low-latency RC). Virtual screen was 2560x1440 HiDPI (mode 68); BetterDisplay had restored
+it itself, so the set returned "Failed." harmlessly. Fixes above (cursor overlay, byte-budget window,
+refinement, 100 Mbps) are NOT yet tested on the iMac. Stats line now shows enc/net ms.
 
 ## Status
 Everything compiles (`./build.sh`). Verified on the Air (iMac off): Screen Recording permission (needs the

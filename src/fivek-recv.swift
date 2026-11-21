@@ -20,6 +20,8 @@ final class KeyWindow: NSWindow { override var canBecomeKey: Bool { true } }
 final class Receiver: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     let layer = AVSampleBufferDisplayLayer()
+    let cursorLayer = CALayer()   // the Air's cursor, drawn here so it moves at network speed (type 3/4)
+    var cursorSize = CGSize(width: 17, height: 23)
     var launchdMode = false
     var listenSources: [DispatchSourceRead] = []
     var bonjour: DNSServiceRef?
@@ -73,6 +75,13 @@ final class Receiver: NSObject, NSApplicationDelegate {
             layer.videoGravity = .resize
             layer.backgroundColor = NSColor.black.cgColor
             v.layer?.addSublayer(layer)
+            cursorLayer.contentsScale = screen.backingScaleFactor
+            cursorLayer.contentsGravity = .resize
+            cursorLayer.isHidden = true
+            cursorLayer.zPosition = 10
+            cursorLayer.actions = ["position": NSNull(), "bounds": NSNull(), "contents": NSNull(),
+                                   "hidden": NSNull(), "anchorPoint": NSNull()]
+            v.layer?.addSublayer(cursorLayer)
             window.contentView = v
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
                 if e.keyCode == 53 { NSApp.terminate(nil); return nil }   // Esc
@@ -87,6 +96,7 @@ final class Receiver: NSObject, NSApplicationDelegate {
 
     func hideWindow() {
         flushLayer()
+        cursorLayer.isHidden = true
         window?.orderOut(nil)
         NSApp.presentationOptions = []
         NSCursor.unhide()
@@ -175,7 +185,18 @@ final class Receiver: NSObject, NSApplicationDelegate {
             var p = [UInt8](repeating: 0, count: len)
             guard len == 0 || readFully(fd, &p, len) else { return }
 
-            if type == 1 {
+            if type == 3, p.count >= 5 {
+                let x = CGFloat(Int(p[0]) << 8 | Int(p[1])) / 65535, y = CGFloat(Int(p[2]) << 8 | Int(p[3])) / 65535
+                let visible = p[4] != 0
+                DispatchQueue.main.async { self.moveCursor(x, y, visible) }
+            } else if type == 4, p.count > 8 {
+                func u16(_ i: Int) -> CGFloat { CGFloat(Int(p[i]) << 8 | Int(p[i + 1])) / 100 }
+                let hot = CGPoint(x: u16(0), y: u16(2)), size = CGSize(width: u16(4), height: u16(6))
+                if let src = CGImageSourceCreateWithData(Data(p[8...]) as CFData, nil),
+                   let img = CGImageSourceCreateImageAtIndex(src, 0, nil) {
+                    DispatchQueue.main.async { self.setCursor(img, size: size, hot: hot) }
+                }
+            } else if type == 1 {
                 if let f = makeFormat(p) { fmt = f }
             } else if type == 2 {
                 // Ack every frame message, decoded or not, so the sender's in-flight window keeps moving.
@@ -199,6 +220,22 @@ final class Receiver: NSObject, NSApplicationDelegate {
                 frames = 0; bytes = 0; lastStats = Date()
             }
         }
+    }
+
+    // MARK: cursor (main thread)
+
+    func moveCursor(_ x: CGFloat, _ y: CGFloat, _ visible: Bool) {
+        let b = layer.bounds
+        cursorLayer.position = CGPoint(x: x * b.width, y: (1 - y) * b.height)   // layer origin is bottom-left
+        cursorLayer.isHidden = !visible
+    }
+
+    func setCursor(_ img: CGImage, size: CGSize, hot: CGPoint) {
+        guard size.width > 0, size.height > 0 else { return }
+        cursorSize = size
+        cursorLayer.contents = img
+        cursorLayer.bounds = CGRect(origin: .zero, size: size)
+        cursorLayer.anchorPoint = CGPoint(x: hot.x / size.width, y: 1 - hot.y / size.height)   // hotspot is top-left based
     }
 
     func readFully(_ fd: Int32, _ buf: inout [UInt8], _ n: Int) -> Bool {

@@ -27,9 +27,13 @@ BetterDisplay virtual screen, 2560x1440 HiDPI          launchd listens on :5959,
 
 - **Light on the laptop.** Hardware HEVC encoding, zero-copy NV12 capture, and frames are only captured when
   the screen changes.
-- **Low latency.** At most 2 frames are ever in flight. The receiver acknowledges every frame, so a slow
-  link can't build up a queue. When the link is busy, frames are skipped *before* encoding, and the newest one
-  is always sent once there's room.
+- **Low latency.** The receiver acknowledges every frame, and the sender limits unacknowledged data (2–5 frames,
+  capped by bytes), so a slow link can't build up a queue. When the link is busy, frames are skipped *before*
+  encoding, and the newest one is always sent once there's room.
+- **Responsive cursor.** The mouse pointer isn't part of the video. Its position and shape are sent separately
+  about 120 times a second and drawn on the iMac, so it moves without waiting for encoding.
+- **Sharp when still.** Once the screen stops changing, the last frame is re-encoded a few times so the encoder
+  can refine it to full detail.
 - **Native-utility feel.** A menu bar app on the Air, and a socket-activated launchd agent on the iMac.
   Nothing is resident when you're not using it.
 
@@ -82,7 +86,7 @@ All optional:
 defaults write com.fivek.sender VirtualScreenName "Virtual 16:9"
 defaults write com.fivek.sender Resolution "2560x1440"    # "looks like" size on the iMac
 defaults write com.fivek.sender HiDPI -bool true          # false = 5120x2880 at 1x (tiny text)
-defaults write com.fivek.sender Mbps -int 60              # lower if Wi-Fi stutters
+defaults write com.fivek.sender Mbps -int 100             # lower if Wi-Fi stutters
 defaults write com.fivek.sender FPS -int 60               # 30 halves the bandwidth
 defaults write com.fivek.sender Host "192.168.1.20"       # skip Bonjour discovery
 ```
@@ -114,7 +118,8 @@ tools/airplay-native.swift  inspects or sets display modes with CoreGraphics (di
 
 ### Wire format
 `[type u8][len u32 BE][payload]`. Type 1 carries HEVC parameter sets (sent before every keyframe). Type 2 is a
-frame: `[flags u8 (1=key)][4-byte length-prefixed NALs]`. The receiver sends back `0x01` per frame (ack) or
+frame: `[flags u8 (1=key)][4-byte length-prefixed NALs]`. Type 3 is the cursor position and type 4 the cursor
+image (PNG plus hotspot). The receiver sends back `0x01` per frame (ack) or
 `0x4B` to request a keyframe.
 
 ## Roadmap

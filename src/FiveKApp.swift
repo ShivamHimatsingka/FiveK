@@ -9,7 +9,7 @@
 //   defaults write com.fivek.sender VirtualScreenName "Virtual 16:9"
 //   defaults write com.fivek.sender Resolution "2560x1440"    # what the iMac "looks like"
 //   defaults write com.fivek.sender HiDPI -bool true           # false = 5120x2880 at 1x (tiny text)
-//   defaults write com.fivek.sender Mbps -int 60
+//   defaults write com.fivek.sender Mbps -int 100
 //   defaults write com.fivek.sender FPS -int 60
 //   defaults write com.fivek.sender Host "192.168.1.20"        # skip Bonjour; delete the key to go back
 
@@ -145,7 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     done = BetterDisplay.cli(["set", "-name=\(name)", "-resolution=\(res)", "-hiDPI=\(hidpi ? "on" : "off")"]).0
                     if !done { try await Task.sleep(nanoseconds: 250_000_000) }
                 }
-                print("BetterDisplay mode \(res) HiDPI \(hidpi): \(done ? "set" : "not accepted")")
+                // "Failed." can also mean BetterDisplay already restored that mode by itself, so check.
+                let nowRes = BetterDisplay.cli(["get", "-name=\(name)", "-resolution"]).1
+                let nowHiDPI = BetterDisplay.cli(["get", "-name=\(name)", "-hiDPI"]).1 == "on"
+                print("BetterDisplay mode: wanted \(res) HiDPI \(hidpi), now \(nowRes) HiDPI \(nowHiDPI)\(done ? "" : " (set reported Failed.)")")
             }
 
             // 3. Wait for macOS to show it as a 5120-pixel-wide display.
