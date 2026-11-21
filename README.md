@@ -37,6 +37,12 @@ BetterDisplay virtual screen, 2560x1440 HiDPI          launchd listens on :5959,
 - **Native-utility feel.** A menu bar app on the Air, and a socket-activated launchd agent on the iMac.
   Nothing is resident when you're not using it.
 
+## Download
+
+Get **FiveK.zip** (MacBook) and **FiveK-Receiver.zip** (iMac) from the
+[latest release](https://github.com/ShivamHimatsingka/FiveK/releases/latest). The apps aren't notarized, so open
+each one the first time with **right-click > Open**. To build them yourself, see Setup below.
+
 ## Requirements
 
 | | |
