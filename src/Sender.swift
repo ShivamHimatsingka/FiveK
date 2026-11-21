@@ -26,6 +26,9 @@ struct SenderConfig {
     var fps = 60
     var displayID: CGDirectDisplayID? = nil   // nil = first display that is 5120 pixels wide
     var findTimeout: TimeInterval = 20
+    // Measured on an M5 Air at 5120x2880: low-latency rate control ~27 ms/frame and ~20 fps sustained,
+    // normal rate control ~15 ms/frame and ~48 fps. So normal is the default.
+    var lowLatencyRC = false
 }
 
 final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
@@ -379,17 +382,16 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
                                                 imageBufferAttributes: nil, compressedDataAllocator: nil,
                                                 outputCallback: nil, refcon: nil, compressionSessionOut: &s)
             if st != noErr { print("VTCompressionSessionCreate(lowLatency=\(lowLatency)) -> \(st)") }
-            else { print("HEVC hardware encoder ready (low-latency rate control: \(lowLatency))") }
+            else { print("HEVC hardware encoder ready (\(lowLatency ? "low-latency" : "normal") rate control)") }
             return st == noErr ? s : nil
         }
-        guard let s = create(lowLatency: true) ?? create(lowLatency: false) else { return false }
+        guard let s = create(lowLatency: cfg.lowLatencyRC) ?? create(lowLatency: !cfg.lowLatencyRC) else { return false }
         func set(_ k: CFString, _ v: CFTypeRef) {
             let st = VTSessionSetProperty(s, key: k, value: v)
             if st != noErr { print("  (property \(k) not accepted: \(st))") }
         }
         set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue)
         set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse)
-        set(kVTCompressionPropertyKey_MaxFrameDelayCount, NSNumber(value: 0))
         set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue)
         set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main_AutoLevel)
         set(kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: cfg.mbps * 1_000_000))

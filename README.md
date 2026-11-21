@@ -94,10 +94,15 @@ defaults write com.fivek.sender HiDPI -bool true          # false = 5120x2880 at
 defaults write com.fivek.sender Mbps -int 100             # lower if Wi-Fi stutters
 defaults write com.fivek.sender FPS -int 60               # 30 halves the bandwidth
 defaults write com.fivek.sender Host "192.168.1.20"       # skip Bonjour discovery
+defaults write com.fivek.sender LowLatencyRC -bool true   # low-latency encoder mode (slower at 5K on M5)
 ```
 
 ## Troubleshooting
 
+- **Choppy or laggy:** turn off **Low Power Mode** on the MacBook (System Settings > Battery). It slows the
+  video encoder, and at 5K the encoder is the bottleneck. The stats line in `~/Library/Logs/FiveK.log`
+  (`fps · Mbps · enc ms · net ms · skipped`) shows whether encoding or the network is the slow part.
+  `tools/encbench.swift` benchmarks the encoder on its own.
 - **Logs:** `~/Library/Logs/FiveK.log` on the MacBook, `/tmp/fivek-recv.log` on the iMac.
 - **"Couldn't find the iMac":** run `dns-sd -B _fivek._tcp` on the MacBook. The iMac must be on, logged in
   and on the same network.
@@ -119,6 +124,7 @@ src/make-icon.swift       draws the app icon
 build.sh                  builds FiveK.app, FiveK Receiver.app (universal) and zips into build/
 make-signing-cert.sh      creates the local "FiveK Local Signing" identity
 tools/airplay-native.swift  inspects or sets display modes with CoreGraphics (diagnostics)
+tools/encbench.swift      benchmarks the HEVC encoder at 5K/4K in each rate-control mode
 ```
 
 ### Wire format

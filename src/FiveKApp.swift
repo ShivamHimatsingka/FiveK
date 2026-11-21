@@ -12,6 +12,7 @@
 //   defaults write com.fivek.sender Mbps -int 100
 //   defaults write com.fivek.sender FPS -int 60
 //   defaults write com.fivek.sender Host "192.168.1.20"        # skip Bonjour; delete the key to go back
+//   defaults write com.fivek.sender LowLatencyRC -bool true    # old encoder mode (slower at 5K on M5)
 
 import Cocoa
 import CoreGraphics
@@ -162,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let h = d.string(forKey: "Host"), !h.isEmpty { cfg.host = h }
             if d.integer(forKey: "Mbps") > 0 { cfg.mbps = d.integer(forKey: "Mbps") }
             if d.integer(forKey: "FPS") > 0 { cfg.fps = d.integer(forKey: "FPS") }
+            cfg.lowLatencyRC = d.bool(forKey: "LowLatencyRC")
             let s = Sender(cfg)
             s.onStatus = { [weak self] in self?.setStatus($0) }
             s.onStop = { [weak self] err in self?.finish(err) }

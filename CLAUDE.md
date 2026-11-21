@@ -35,7 +35,8 @@ Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
   Stop (menu, re-launching the app, or receiver closing) disconnects the virtual screen and quits BetterDisplay
   if FiveK launched it. Settings via `defaults` (see README).
 - Sender: ScreenCaptureKit (NV12, 709 matrix, captureResolution .best, no cursor) -> VideoToolbox HEVC
-  hardware encode (low-latency RC with fallback, no reordering, no periodic keyframes, 100 Mbps) -> TCP (Network.framework,
+  hardware encode (NORMAL rate control by default, low-latency RC optional via LowLatencyRC; no reordering,
+  no periodic keyframes, 100 Mbps) -> TCP (Network.framework,
   noDelay, interactiveVideo). Bonjour `_fivek._tcp` or Host setting.
 - Receiver: "FiveK Receiver.app" (universal x86_64+arm64, macOS 12+, ad-hoc signed). Opened by the user it is a
   self-installer: copies itself to ~/Applications (avoids Gatekeeper translocation), writes
@@ -92,6 +93,13 @@ state with `get` first and only sets what differs.
 - Keyframe request while the Air screen is static is only served on the next screen change.
 - TCC: ad-hoc signing did NOT get Screen Recording on Tahoe (denied even with the toggle on). build.sh signs with a
   self-signed "FiveK Local Signing" identity (make-signing-cert.sh, login keychain, not trusted) instead.
+
+## Second test + encoder benchmark (2026-11-21)
+Cursor overlay and quit options work. Log: net round trip median 9 ms (p90 17), but encode median 36 ms,
+p90 106, max 198 ms => encoder-bound, fps median 10 / max 29. Low Power Mode was ON (even on AC).
+tools/encbench.swift, M5 Air, LPM on, 5120x2880 HEVC: low-latency RC 27 ms/frame and ~20 fps sustained;
+normal RC + RealTime 15 ms and ~48 fps; H.264 can't do 5K (-12903); MaxFrameDelayCount rejected (-12900)
+in both modes. Performance drops as the fanless Air heats up. Switched default to normal RC (untested live).
 
 ## Earlier artifact
 `tools/airplay-native.swift`: standalone CLI that lists/sets display modes via CoreGraphics. It cannot
