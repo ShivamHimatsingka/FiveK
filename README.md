@@ -74,8 +74,13 @@ Allow both, then open FiveK again.
 
 - **Start:** open FiveK. It starts BetterDisplay if needed, connects the virtual screen at 2560×1440 HiDPI,
   finds the iMac, wakes its display and streams.
-- **Stop:** click FiveK again, use the menu bar icon > **Stop**, or press **Esc** on the iMac. The virtual
-  screen is disconnected, so windows come back to the MacBook. If FiveK started BetterDisplay, it quits it too.
+- **Stop from the MacBook:** click FiveK again, or use the menu bar icon > **Stop**.
+- **Stop from the iMac:** press **Esc** or **⌘Q**. Or move the iMac's own mouse: its pointer comes back with a
+  bar at the top of the screen, where you click **Disconnect**.
+
+Either way, the MacBook's virtual screen is disconnected, so windows come back to the MacBook. If FiveK started
+BetterDisplay, it quits it too. On the iMac nothing keeps running; the receiver starts again the next time you
+open FiveK.
 
 The menu bar shows live fps and Mbps.
 

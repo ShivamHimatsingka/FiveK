@@ -16,6 +16,8 @@ import dnssd
 import IOKit.pwr_mgt
 
 final class KeyWindow: NSWindow { override var canBecomeKey: Bool { true } }
+/// Works on the first click even when the receiver isn't the active app.
+final class FirstClickButton: NSButton { override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true } }
 
 final class Receiver: NSObject, NSApplicationDelegate {
     var window: NSWindow!
@@ -27,8 +29,14 @@ final class Receiver: NSObject, NSApplicationDelegate {
     var bonjour: DNSServiceRef?
     var activity: NSObjectProtocol?
     var busy = false   // one sender at a time; touched only on main
+    var clientFD: Int32 = -1
+    var controls: NSView?
+    var controlsHideTimer: Timer?
+    var cursorShown = true
+    var monitorsInstalled = false
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        installMenu()
         // Get the listening socket(s): from launchd if it started us, otherwise make our own.
         var fds = launchdSockets()
         launchdMode = !fds.isEmpty
@@ -83,23 +91,104 @@ final class Receiver: NSObject, NSApplicationDelegate {
                                    "hidden": NSNull(), "anchorPoint": NSNull()]
             v.layer?.addSublayer(cursorLayer)
             window.contentView = v
-            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
-                if e.keyCode == 53 { NSApp.terminate(nil); return nil }   // Esc
-                return e
-            }
+            window.acceptsMouseMovedEvents = true
+            v.addSubview(makeControls(in: v.bounds))
         }
+        installMonitors()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         NSApp.presentationOptions = [.hideDock, .hideMenuBar]
-        NSCursor.hide()
+        setControlsVisible(false)
+    }
+
+    // MARK: ending a session
+    // Ways out: Esc or Cmd-Q (menu key equivalents, work with the menu bar hidden), moving the iMac's own mouse
+    // (shows its pointer and a Disconnect button), or Stop on the MacBook (closes the connection).
+
+    func installMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let m = NSMenu()
+        let end = NSMenuItem(title: "Disconnect", action: #selector(endSession), keyEquivalent: "\u{1b}")
+        end.keyEquivalentModifierMask = []
+        end.target = self
+        m.addItem(end)
+        m.addItem(.separator())
+        m.addItem(NSMenuItem(title: "Quit FiveK Receiver", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appItem.submenu = m
+        NSApp.mainMenu = main
+    }
+
+    @objc func endSession() {
+        if launchdMode || clientFD < 0 { NSApp.terminate(nil); return }
+        shutdown(clientFD, SHUT_RDWR)   // manual mode: the reader thread ends and the window hides
+    }
+
+    func installMonitors() {
+        guard !monitorsInstalled else { return }
+        monitorsInstalled = true
+        let mouse: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDown, .rightMouseDown, .scrollWheel, .leftMouseDragged]
+        // Global: the iMac's mouse moved while another app has focus (no special permission needed for mouse events).
+        NSEvent.addGlobalMonitorForEvents(matching: mouse) { [weak self] _ in self?.localMouseActivity() }
+        NSEvent.addLocalMonitorForEvents(matching: mouse) { [weak self] e in self?.localMouseActivity(); return e }
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            if e.keyCode == 53 { self?.endSession(); return nil }   // Esc (backup for the menu item)
+            return e
+        }
+    }
+
+    func localMouseActivity() {
+        guard busy || launchdMode, window?.isVisible == true else { return }
+        if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil) }
+        setControlsVisible(true)
+        controlsHideTimer?.invalidate()
+        controlsHideTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
+            self?.setControlsVisible(false)
+        }
+    }
+
+    func setControlsVisible(_ on: Bool) {
+        controls?.isHidden = !on
+        if on != cursorShown {
+            cursorShown = on
+            if on { NSCursor.unhide() } else { NSCursor.hide() }
+        }
+    }
+
+    func makeControls(in bounds: NSRect) -> NSView {
+        let w: CGFloat = 420, h: CGFloat = 56
+        let hud = NSVisualEffectView(frame: NSRect(x: (bounds.width - w) / 2, y: bounds.height - h - 24, width: w, height: h))
+        hud.material = .hudWindow
+        hud.blendingMode = .withinWindow
+        hud.state = .active
+        hud.wantsLayer = true
+        hud.layer?.cornerRadius = 14
+        hud.layer?.zPosition = 20
+        hud.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+        let label = NSTextField(labelWithString: "Showing your MacBook · Esc to disconnect")
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.frame = NSRect(x: 18, y: (h - 20) / 2, width: 280, height: 20)
+        hud.addSubview(label)
+        let b = FirstClickButton(title: "Disconnect", target: self, action: #selector(endSession))
+        b.bezelStyle = .rounded
+        b.controlSize = .large
+        b.frame = NSRect(x: w - 124, y: (h - 32) / 2, width: 110, height: 32)
+        hud.addSubview(b)
+        hud.isHidden = true
+        controls = hud
+        return hud
     }
 
     func hideWindow() {
         flushLayer()
         cursorLayer.isHidden = true
+        controlsHideTimer?.invalidate()
+        setControlsVisible(true)   // restores the pointer
+        controls?.isHidden = true
         window?.orderOut(nil)
         NSApp.presentationOptions = []
-        NSCursor.unhide()
         if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
     }
 
@@ -149,6 +238,7 @@ final class Receiver: NSObject, NSApplicationDelegate {
         var vi = Int32(NET_SERVICE_TYPE_VI)
         setsockopt(c, SOL_SOCKET, SO_NET_SERVICE_TYPE, &vi, 4)
         print("Sender connected.")
+        clientFD = c
         showWindow()
         let t = Thread { [weak self] in
             self?.serve(c)
@@ -163,6 +253,7 @@ final class Receiver: NSObject, NSApplicationDelegate {
     func sessionEnded() {
         print("Sender disconnected.")
         busy = false
+        clientFD = -1
         if launchdMode { NSApp.terminate(nil) }   // launchd starts us again on the next connection
         else { hideWindow() }
     }

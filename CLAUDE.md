@@ -45,6 +45,9 @@ Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
   (Sockets/Listener, port 5959, Bonjour "fivek"), so nothing runs when idle. Uses launch_activate_socket
   (looked up via dlsym; not exposed to Swift), BSD sockets, a blocking reader thread, AVSampleBufferDisplayLayer
   with DisplayImmediately. Wakes the display, disables idle display sleep while running, exits on disconnect.
+  Ending a session on the iMac: Esc / Cmd-Q (main-menu key equivalents, so they work with the menu bar hidden),
+  or moving the iMac's own mouse (global+local mouse monitors, no permission needed) shows its pointer and a HUD
+  with a first-click Disconnect button for 3 s. In launchd mode all of these quit the process.
   Run by hand it listens itself (DNSServiceRegister) and stays up.
 - Wire format: [type u8][len u32 BE][payload]. type 1 = parameter sets
   ([count u8] then [len u16 BE][bytes] each, sent before every keyframe);
