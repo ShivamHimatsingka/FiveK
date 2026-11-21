@@ -71,12 +71,17 @@ it itself, so the set returned "Failed." harmlessly. Fixes above (cursor overlay
 refinement, 100 Mbps) are NOT yet tested on the iMac. Stats line now shows enc/net ms.
 
 ## Status
-Everything compiles (`./build.sh`). Verified on the Air (iMac off): Screen Recording permission (needs the
-signing cert), BetterDisplay CLI connect + switch to 2560x1440 HiDPI, Bonjour search timeout, cleanup
-(virtual screen disconnected). NOT yet run: capture/encode at 5120x2880, the stream, the iMac receiver
-(launchd socket activation, Bonjour advertisement, decode).
+Working end to end on the real hardware (MacBook Air M5 -> 2020 iMac over Wi-Fi), released as v0.1.0
+(GitHub release with FiveK.zip + FiveK-Receiver.zip). Commits are authored by Shivam Himatsingka only
+(no Claude co-author trailers; history was rewritten once to remove them).
 BetterDisplay CLI quirk: a `set` that changes nothing prints "Failed." to stderr and exits 1, so the app reads
 state with `get` first and only sets what differs.
+
+## Third test (2026-11-21, Low Power Mode off, normal RC)
+fps while active median 30, p90 42, max 50; skipped <= 2/s; net median 8 ms (p90 12); encode median 37 ms
+(p90 49). Encode figure is submit->output and likely includes queueing (up to 5 frames in flight), since the
+standalone benchmark is ~15 ms. Possible next step: cap frames inside the encoder at 1-2 and hold only the
+newest (user said current performance is fine for now).
 
 ## Suggested test plan
 1. `./build.sh --install` on the Air; copy build/FiveK Receiver.app to the iMac and open it once (right-click > Open).

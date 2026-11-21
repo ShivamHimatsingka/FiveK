@@ -3,148 +3,196 @@
 <h1 align="center">FiveK</h1>
 
 <p align="center">
-Use a 27" 5K iMac as a true <b>5120×2880</b> extended display for a MacBook, over Wi-Fi.<br>
-One click to start. Nothing runs on either Mac when it's idle.
+<b>Use a 27" 5K iMac as a true 5120×2880 extended display for your MacBook, over Wi-Fi.</b><br>
+One click to start. Nothing running on either Mac when you're not using it.
 </p>
 
-> **Status: prototype.** Everything builds. The sender has been tested on the Air: permissions,
-> BetterDisplay control and the receiver search all work. The full stream to the iMac has **not** been run
-> yet, so expect rough edges.
+<p align="center">
+<a href="https://github.com/ShivamHimatsingka/FiveK/releases/latest"><img src="https://img.shields.io/github/v/release/ShivamHimatsingka/FiveK?label=download" alt="Latest release"></a>
+<img src="https://img.shields.io/badge/macOS-12%2B%20receiver%20%C2%B7%2014%2B%20sender-blue" alt="macOS versions">
+<img src="https://img.shields.io/badge/Swift-no%20dependencies-orange" alt="Swift">
+<a href="LICENSE"><img src="https://img.shields.io/github/license/ShivamHimatsingka/FiveK" alt="MIT license"></a>
+</p>
 
-## Why
+---
 
-macOS can extend onto another Mac with AirPlay, but AirPlay caps the stream at about 1080p. On a 5K iMac that
-looks soft. FiveK streams the picture itself, at full resolution:
+macOS can extend your screen onto another Mac with AirPlay, but AirPlay limits the stream to about **1080p**.
+On a 5K iMac that looks blurry, and there's no setting to raise it. Sidecar and Target Display Mode don't help
+either: neither supports a 2020 iMac as a display for another Mac.
 
-```
-MacBook (sender)                                       iMac (receiver)
-BetterDisplay virtual screen, 2560x1440 HiDPI          launchd listens on :5959, advertises _fivek._tcp
-  -> ScreenCaptureKit (only on screen changes)           -> starts fivek-recv when the Air connects
-  -> VideoToolbox HEVC hardware encode                   -> hardware HEVC decode
-  -> TCP over Wi-Fi  ─────────────────────────────────►  -> borderless fullscreen, 5120x2880
-                     ◄──────── per-frame acks ─────────
-```
+FiveK streams the picture itself: hardware HEVC encoding on the MacBook, hardware decoding on the iMac, at the
+full 5120×2880. Text is as crisp as the iMac's own display.
 
-- **Light on the laptop.** Hardware HEVC encoding, zero-copy NV12 capture, and frames are only captured when
-  the screen changes.
-- **Low latency.** The receiver acknowledges every frame, and the sender limits unacknowledged data (2–5 frames,
-  capped by bytes), so a slow link can't build up a queue. When the link is busy, frames are skipped *before*
-  encoding, and the newest one is always sent once there's room.
-- **Responsive cursor.** The mouse pointer isn't part of the video. Its position and shape are sent separately
-  about 120 times a second and drawn on the iMac, so it moves without waiting for encoding.
-- **Sharp when still.** Once the screen stops changing, the last frame is re-encoded a few times so the encoder
-  can refine it to full detail.
-- **Native-utility feel.** A menu bar app on the Air, and a socket-activated launchd agent on the iMac.
-  Nothing is resident when you're not using it.
+|  | AirPlay "Extend" | **FiveK** |
+|---|---|---|
+| Resolution on a 5K iMac | ~1920×1080, upscaled | **5120×2880** (2560×1440 HiDPI) |
+| Cursor | part of the video | **drawn on the iMac** (moves at network speed) |
+| Starts with | Control Center | one click, from the app or Dock |
+| Cost | free | free, no third-party streaming apps |
 
-## Download
+## Real-world performance
 
-Get **FiveK.zip** (MacBook) and **FiveK-Receiver.zip** (iMac) from the
-[latest release](https://github.com/ShivamHimatsingka/FiveK/releases/latest). The apps aren't notarized, so open
-each one the first time with **right-click > Open**. To build them yourself, see Setup below.
-
-## Requirements
+Measured on a **MacBook Air M5** streaming to a **2020 27" iMac** over home Wi-Fi:
 
 | | |
 |---|---|
-| **Sender** | Apple Silicon Mac running macOS 14+ (developed on macOS Tahoe) with [BetterDisplay](https://github.com/waydabber/BetterDisplay) (free) |
-| **Receiver** | Intel or Apple Silicon Mac running macOS 12+ with a 5K panel (developed for a 2020 27" iMac) |
-| **Network** | Both Macs on the same network. 5 GHz Wi-Fi works; Ethernet on either side helps. |
-| **Build** | Xcode command-line tools (`swiftc`) |
+| Frame rate while working | **30 fps** typical, up to **50 fps** when dragging windows |
+| Encode on the MacBook | 20–50 ms per 5K frame (hardware HEVC) |
+| Network round trip | 8 ms median, 12 ms at the 90th percentile |
+| Bandwidth | 2–9 Mbps while working, close to 0 when the screen is still |
+| Dropped frames | effectively none (at most 2/s) |
 
-## Setup
+The screen is only captured when something changes, so a still desktop costs almost nothing. At 5K, the
+MacBook's video encoder is the limit, not Wi-Fi. **Turn off Low Power Mode** while streaming: with it on, the
+frame rate above drops by more than half.
 
-**On the MacBook**
+## Quick start
+
+You need **[BetterDisplay](https://github.com/waydabber/BetterDisplay)** (free) on the MacBook, to create
+the virtual 5K screen.
+
+1. **Download** `FiveK.zip` and `FiveK-Receiver.zip` from the
+   **[latest release](https://github.com/ShivamHimatsingka/FiveK/releases/latest)**.
+2. **On the iMac:** unzip `FiveK-Receiver.zip`, then **right-click > Open** on **FiveK Receiver**. It
+   installs itself and quits. Nothing stays running.
+3. **On the MacBook:**
+   - In BetterDisplay, create a **16:9 virtual screen** named `Virtual 16:9`.
+   - Unzip `FiveK.zip`, move **FiveK** to Applications, and **right-click > Open** it.
+   - Allow **Screen Recording** and **Local Network** when asked, then open FiveK again.
+
+From then on, just **open FiveK**. It connects the virtual screen, finds the iMac, wakes its display and
+starts streaming.
+
+> The apps aren't notarized by Apple, which is why the first launch needs **right-click > Open**. If macOS
+> keeps denying Screen Recording, build FiveK yourself (below): a self-built copy is signed with your own
+> local certificate, which macOS remembers.
+
+## Using it
+
+| To… | Do this |
+|---|---|
+| **Start** | Open FiveK (from the Dock, Spotlight or Launchpad) |
+| **Stop from the MacBook** | Click FiveK again, or use the menu bar icon > **Stop** |
+| **Stop from the iMac** | Press **Esc** or **⌘Q**. Or move the iMac's mouse and click **Disconnect** |
+| **See live stats** | Click the menu bar icon (fps, Mbps, encode and network times) |
+
+When a session ends, the virtual screen disconnects, so your windows come back to the MacBook. If FiveK
+started BetterDisplay, it quits it too.
+
+**iMac tips:** keep it logged in, and stop it from sleeping on its own (System Preferences > Energy Saver >
+*Prevent computer from sleeping automatically when the display is off*). The display itself can sleep, since
+FiveK wakes it.
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph MacBook["MacBook · FiveK.app (menu bar)"]
+        BD["BetterDisplay virtual screen<br/>2560×1440 HiDPI = 5120×2880 px"] --> SCK["ScreenCaptureKit<br/>only when the screen changes"]
+        SCK --> VT["VideoToolbox<br/>hardware HEVC"]
+        CUR["Cursor position + shape<br/>~120×/s"]
+    end
+    subgraph iMac["iMac · FiveK Receiver"]
+        LD["launchd<br/>listens on :5959, Bonjour"] -->|starts on connect| RX["Hardware HEVC decode<br/>fullscreen 5120×2880"]
+        OV["Cursor overlay"]
+    end
+    VT -- "TCP over Wi-Fi" --> RX
+    CUR -- "same connection" --> OV
+    RX -. "per-frame acks" .-> VT
+```
+
+- **Nothing runs when idle.** On the iMac, launchd holds the port and advertises it over Bonjour, and only
+  starts the receiver when the MacBook connects. On the MacBook, FiveK runs only while you're streaming.
+- **Latency can't build up.** The iMac acknowledges every frame, and the MacBook limits how much unacknowledged
+  data is in flight (2–5 frames, capped by bytes). When the link is busy, frames are skipped *before* encoding,
+  and the newest frame is always sent once there's room. So the picture is never stale.
+- **Responsive cursor.** The pointer isn't part of the video. Its position and shape travel separately and
+  are drawn on the iMac, so the pointer moves without waiting for encoding.
+- **Sharp when still.** Once the screen stops changing, the last frame is re-encoded a few times so the
+  encoder can refine it to full detail.
+- **Light on the laptop.** Zero-copy NV12 capture straight into the hardware encoder; no CPU pixel work.
+
+<details>
+<summary><b>Wire format</b></summary>
+
+Every message is `[type u8][length u32 big-endian][payload]`.
+
+| Type | Direction | Payload |
+|---|---|---|
+| 1 | MacBook → iMac | HEVC parameter sets, sent before every keyframe: `[count u8]` then `[len u16][bytes]` each |
+| 2 | MacBook → iMac | Frame: `[flags u8, 1 = keyframe]` + 4-byte length-prefixed NAL units |
+| 3 | MacBook → iMac | Cursor position: `[x u16][y u16]` as a fraction of the screen × 65535, `[visible u8]` |
+| 4 | MacBook → iMac | Cursor image: `[hotX][hotY][width][height]` as u16 in 1/100 pt, then PNG |
+
+Back-channel, iMac → MacBook, one byte each: `0x01` acknowledges a frame; `0x4B` (`K`) requests a keyframe.
+</details>
+
+## Building from source
+
+Requires the Xcode command-line tools (`xcode-select --install`). No other dependencies.
+
 ```bash
 git clone https://github.com/ShivamHimatsingka/FiveK.git
 cd FiveK
-./make-signing-cert.sh      # once: local code-signing certificate, so Screen Recording permission sticks
-./build.sh --install        # builds both apps into build/ and installs /Applications/FiveK.app
+./make-signing-cert.sh    # once: local code-signing certificate, so macOS remembers Screen Recording
+./build.sh --install      # builds everything into build/ and installs /Applications/FiveK.app
 ```
-In BetterDisplay, create a **16:9 virtual screen** named `Virtual 16:9`. To use a different name, see Settings below.
 
-**On the iMac**: copy `build/FiveK Receiver.app` over (or `build/FiveK-Receiver.zip`; AirDrop is fine) and
-open it once. It copies itself to `~/Applications` and registers an on-demand launchd agent. Then it quits,
-and nothing keeps running. From then on, the receiver starts by itself whenever the MacBook connects.
-Because the app isn't notarized, the first time you open it you need to **right-click > Open** and confirm.
-To uninstall, open `~/Applications/FiveK Receiver.app` and choose **Uninstall**.
-
-Keep the iMac logged in, and stop it from sleeping on its own (System Preferences > Energy Saver >
-"Prevent computer from sleeping automatically when the display is off"). The display itself can sleep:
-FiveK wakes it.
-
-**First launch**: open FiveK. macOS asks for **Screen Recording** and **Local Network** permission.
-Allow both, then open FiveK again.
-
-## Use
-
-- **Start:** open FiveK. It starts BetterDisplay if needed, connects the virtual screen at 2560×1440 HiDPI,
-  finds the iMac, wakes its display and streams.
-- **Stop from the MacBook:** click FiveK again, or use the menu bar icon > **Stop**.
-- **Stop from the iMac:** press **Esc** or **⌘Q**. Or move the iMac's own mouse: its pointer comes back with a
-  bar at the top of the screen, where you click **Disconnect**.
-
-Either way, the MacBook's virtual screen is disconnected, so windows come back to the MacBook. If FiveK started
-BetterDisplay, it quits it too. On the iMac nothing keeps running; the receiver starts again the next time you
-open FiveK.
-
-The menu bar shows live fps and Mbps.
+`build/` then contains `FiveK.app`, `FiveK Receiver.app` (universal: Intel and Apple Silicon) and zips of both.
+Copy the receiver to the iMac and open it once, as in Quick start.
 
 ## Settings
 
-All optional:
+All optional, on the MacBook:
+
 ```bash
-defaults write com.fivek.sender VirtualScreenName "Virtual 16:9"
-defaults write com.fivek.sender Resolution "2560x1440"    # "looks like" size on the iMac
-defaults write com.fivek.sender HiDPI -bool true          # false = 5120x2880 at 1x (tiny text)
-defaults write com.fivek.sender Mbps -int 100             # lower if Wi-Fi stutters
-defaults write com.fivek.sender FPS -int 60               # 30 halves the bandwidth
-defaults write com.fivek.sender Host "192.168.1.20"       # skip Bonjour discovery
-defaults write com.fivek.sender LowLatencyRC -bool true   # low-latency encoder mode (slower at 5K on M5)
+defaults write com.fivek.sender VirtualScreenName "Virtual 16:9"   # BetterDisplay screen to use
+defaults write com.fivek.sender Resolution "2560x1440"             # "looks like" size on the iMac
+defaults write com.fivek.sender HiDPI -bool true                   # false = 5120×2880 at 1x (tiny text)
+defaults write com.fivek.sender Mbps -int 100                      # lower if Wi-Fi stutters
+defaults write com.fivek.sender FPS -int 60                        # 30 halves the bandwidth
+defaults write com.fivek.sender Host "192.168.1.20"                # skip Bonjour, connect to this IP
+defaults write com.fivek.sender LowLatencyRC -bool true            # alternative encoder mode (slower at 5K)
 ```
+
+Undo any setting with `defaults delete com.fivek.sender <Name>`.
 
 ## Troubleshooting
 
-- **Choppy or laggy:** turn off **Low Power Mode** on the MacBook (System Settings > Battery). It slows the
-  video encoder, and at 5K the encoder is the bottleneck. The stats line in `~/Library/Logs/FiveK.log`
-  (`fps · Mbps · enc ms · net ms · skipped`) shows whether encoding or the network is the slow part.
-  `tools/encbench.swift` benchmarks the encoder on its own.
-- **Logs:** `~/Library/Logs/FiveK.log` on the MacBook, `/tmp/fivek-recv.log` on the iMac.
-- **"Couldn't find the iMac":** run `dns-sd -B _fivek._tcp` on the MacBook. The iMac must be on, logged in
-  and on the same network.
-- **Screen Recording keeps getting denied:** run `./make-signing-cert.sh`, rebuild, then remove FiveK from
-  Privacy & Security > Screen & System Audio Recording and add it again. An ad-hoc signed build doesn't
-  keep the permission.
-- **Running things by hand:** on the iMac, uninstall the receiver (see Setup), then run
-  `"FiveK Receiver.app/Contents/MacOS/fivek-recv" --listen`. On the MacBook, connect the virtual screen
-  yourself, then run `build/fivek-send --host <iMac IP>`.
+| Problem | Fix |
+|---|---|
+| **Choppy, or lags when dragging windows** | Turn off **Low Power Mode** (System Settings > Battery). The stats line (`fps · Mbps · enc ms · net ms · skipped`) shows whether encoding or the network is slow. `tools/encbench.swift` benchmarks the encoder on its own. |
+| **"Couldn't find the iMac"** | The iMac must be on, logged in and on the same network. Check with `dns-sd -B _fivek._tcp` on the MacBook, or set `Host` (see Settings). |
+| **Screen Recording keeps being denied** | Run `./make-signing-cert.sh`, rebuild, then remove FiveK from *Privacy & Security > Screen & System Audio Recording* and add it again. |
+| **"No virtual screen named…"** | Create a 16:9 virtual screen in BetterDisplay, or set `VirtualScreenName` to the name of yours. |
+| **Uninstall the receiver** | Open `~/Applications/FiveK Receiver.app` on the iMac and choose **Uninstall**. |
+
+**Logs:** `~/Library/Logs/FiveK.log` on the MacBook, `/tmp/fivek-recv.log` on the iMac.
+
+**Running by hand:** uninstall the receiver, then run `"FiveK Receiver.app/Contents/MacOS/fivek-recv" --listen`
+on the iMac. On the MacBook, connect the virtual screen yourself and run `build/fivek-send --host <iMac IP>`.
 
 ## Project layout
 
 ```
-src/Sender.swift          capture -> encode -> network, with flow control (shared)
-src/FiveKApp.swift        menu bar app: permissions, BetterDisplay control, start/stop
-src/send-cli.swift        debug command-line sender
-src/fivek-recv.swift      receiver: self-installer, launchd socket activation, decode, fullscreen display
-src/make-icon.swift       draws the app icon
-build.sh                  builds FiveK.app, FiveK Receiver.app (universal) and zips into build/
-make-signing-cert.sh      creates the local "FiveK Local Signing" identity
-tools/airplay-native.swift  inspects or sets display modes with CoreGraphics (diagnostics)
-tools/encbench.swift      benchmarks the HEVC encoder at 5K/4K in each rate-control mode
+src/Sender.swift            capture → encode → network, flow control, cursor, refinement
+src/FiveKApp.swift          menu bar app: permissions, BetterDisplay control, start/stop
+src/fivek-recv.swift        receiver: self-installer, launchd socket activation, decode, display
+src/send-cli.swift          debug command-line sender
+src/make-icon.swift         draws the app icon
+build.sh                    builds both apps (+ zips) into build/
+make-signing-cert.sh        creates the local "FiveK Local Signing" certificate
+tools/encbench.swift        HEVC encoder benchmark (5K/4K, each rate-control mode)
+tools/airplay-native.swift  lists or sets display modes with CoreGraphics (diagnostics)
 ```
-
-### Wire format
-`[type u8][len u32 BE][payload]`. Type 1 carries HEVC parameter sets (sent before every keyframe). Type 2 is a
-frame: `[flags u8 (1=key)][4-byte length-prefixed NALs]`. Type 3 is the cursor position and type 4 the cursor
-image (PNG plus hotspot). The receiver sends back `0x01` per frame (ack) or
-`0x4B` to request a keyframe.
 
 ## Roadmap
 
-- End-to-end testing on real hardware, plus latency and throughput measurements
-- UDP transport with loss recovery, if TCP stalls on lossy Wi-Fi
-- A 30 fps fallback that switches automatically under load
+- [ ] Give the encoder fewer frames at once, to cut latency during fast motion
+- [ ] UDP transport with loss recovery, for congested Wi-Fi
+- [ ] Automatic 30 fps fallback under load
+- [ ] Notarized builds, so the first launch doesn't need right-click > Open
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © 2026 Shivam Himatsingka
