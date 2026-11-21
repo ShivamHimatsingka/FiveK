@@ -2,11 +2,12 @@
 // Receives the HEVC stream from FiveK on the Air, decodes it in hardware and shows it borderless fullscreen.
 // Esc quits (which also stops the Air side).
 //
-// Normal use: installed by install-receiver.sh as a launchd agent with socket activation. launchd owns
-// port 5959 and advertises _fivek._tcp over Bonjour, so NOTHING runs on the iMac until the Air connects.
-// launchd then starts this program, it shows the picture, and exits when the Air disconnects.
-//
-// Debug use: run it by hand (./fivek-recv); it listens on 5959 itself and keeps running between sessions.
+// Packaged as "FiveK Receiver.app". Three ways it can start:
+//  1. Opened by the user (double-click): installer. Copies itself to ~/Applications and registers a launchd
+//     agent with socket activation: launchd owns port 5959 and advertises _fivek._tcp over Bonjour, so
+//     NOTHING runs on the iMac until the Air connects. Opening it again offers Uninstall.
+//  2. Started by launchd when the Air connects: shows the stream, exits when the Air disconnects.
+//  3. `.../fivek-recv --listen` (debug): listens on 5959 itself and keeps running between sessions.
 
 import Cocoa
 import AVFoundation
@@ -29,6 +30,10 @@ final class Receiver: NSObject, NSApplicationDelegate {
         // Get the listening socket(s): from launchd if it started us, otherwise make our own.
         var fds = launchdSockets()
         launchdMode = !fds.isEmpty
+        if !launchdMode && !CommandLine.arguments.contains("--listen") {
+            Installer.run()
+            return
+        }
         if !launchdMode {
             guard let fd = makeListener(port: 5959) else { print("Can't listen on port 5959"); exit(1) }
             fds = [fd]
@@ -284,6 +289,94 @@ final class Receiver: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
+}
+
+// MARK: installer
+
+enum Installer {
+    static let label = "com.fivek.receiver"
+    static let fm = FileManager.default
+    static var home: URL { fm.homeDirectoryForCurrentUser }
+    static var dest: URL { home.appendingPathComponent("Applications/FiveK Receiver.app") }
+    static var plist: URL { home.appendingPathComponent("Library/LaunchAgents/\(label).plist") }
+    static var domain: String { "gui/\(getuid())" }
+
+    static var isInstalled: Bool { fm.fileExists(atPath: plist.path) && fm.fileExists(atPath: dest.path) }
+    static var runningFromInstalledCopy: Bool {
+        Bundle.main.bundleURL.resolvingSymlinksInPath().standardizedFileURL.path == dest.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    @discardableResult
+    static func sh(_ path: String, _ args: [String]) -> Int32 {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: path); p.arguments = args
+        p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return -1 }
+        p.waitUntilExit(); return p.terminationStatus
+    }
+
+    static func install() throws {
+        // 1. Put the app at a fixed path (a copy opened from Downloads/AirDrop may be translocated by Gatekeeper).
+        if !runningFromInstalledCopy {
+            try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+            try fm.copyItem(at: Bundle.main.bundleURL, to: dest)
+            sh("/usr/bin/xattr", ["-dr", "com.apple.quarantine", dest.path])
+        }
+        // 2. launchd agent: socket-activated, Bonjour-advertised, only in the logged-in GUI session.
+        let exe = dest.appendingPathComponent("Contents/MacOS/fivek-recv").path
+        let job: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [exe],
+            "Sockets": ["Listener": ["SockServiceName": "5959", "SockType": "stream", "Bonjour": "fivek"]],
+            "LimitLoadToSessionType": "Aqua",
+            "ProcessType": "Interactive",
+            "StandardOutPath": "/tmp/fivek-recv.log",
+            "StandardErrorPath": "/tmp/fivek-recv.log",
+        ]
+        try fm.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try PropertyListSerialization.data(fromPropertyList: job, format: .xml, options: 0)
+        try data.write(to: plist)
+        sh("/bin/launchctl", ["bootout", "\(domain)/\(label)"])
+        guard sh("/bin/launchctl", ["bootstrap", domain, plist.path]) == 0 else {
+            throw NSError(domain: "fivek", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "launchctl couldn't load the agent. Try logging out and back in, then open FiveK Receiver again."])
+        }
+    }
+
+    static func uninstall() {
+        sh("/bin/launchctl", ["bootout", "\(domain)/\(label)"])
+        try? fm.removeItem(at: plist)
+        try? fm.removeItem(at: dest)
+    }
+
+    static func alert(_ title: String, _ text: String, _ buttons: [String] = ["OK"]) -> NSApplication.ModalResponse {
+        let a = NSAlert()
+        a.messageText = title; a.informativeText = text
+        for b in buttons { a.addButton(withTitle: b) }
+        return a.runModal()
+    }
+
+    static func run() {
+        NSApp.activate(ignoringOtherApps: true)
+        if isInstalled && runningFromInstalledCopy {
+            let r = alert("FiveK Receiver is ready",
+                          "It starts by itself when FiveK on your MacBook connects, and nothing runs until then.\n\nPress Esc on this Mac to end a session.",
+                          ["OK", "Uninstall"])
+            if r == .alertSecondButtonReturn {
+                uninstall()
+                _ = alert("FiveK Receiver uninstalled", "This Mac no longer accepts FiveK connections.")
+            }
+        } else {
+            do {
+                try install()
+                _ = alert("FiveK Receiver is installed",
+                          "This iMac now shows your MacBook's screen whenever you open FiveK on the MacBook. Nothing runs in the background until then.\n\nInstalled to ~/Applications. You can delete the copy you just opened.\n\nKeep this Mac logged in and set it not to sleep (System Preferences > Battery/Energy Saver: Prevent computer from sleeping automatically when the display is off).")
+            } catch {
+                _ = alert("Couldn't install FiveK Receiver", error.localizedDescription)
+            }
+        }
+        NSApp.terminate(nil)
+    }
 }
 
 let app = NSApplication.shared

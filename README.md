@@ -49,14 +49,19 @@ BetterDisplay virtual screen, 2560x1440 HiDPI          launchd listens on :5959,
 git clone https://github.com/ShivamHimatsingka/FiveK.git
 cd FiveK
 ./make-signing-cert.sh      # once: local code-signing certificate, so Screen Recording permission sticks
-./build.sh --install        # builds and installs /Applications/FiveK.app
+./build.sh --install        # builds both apps into build/ and installs /Applications/FiveK.app
 ```
 In BetterDisplay, create a **16:9 virtual screen** named `Virtual 16:9`. To use a different name, see Settings below.
 
-**On the iMac**: copy the `build/iMac` folder over (AirDrop is fine), then run:
-```bash
-./install-receiver.sh       # installs the on-demand launchd agent; nothing starts running
-```
+**On the iMac**: copy `build/FiveK Receiver.app` over (or `build/FiveK-Receiver.zip`; AirDrop is fine) and
+open it once. It copies itself to `~/Applications` and registers an on-demand launchd agent. Then it quits,
+and nothing keeps running. From then on, the receiver starts by itself whenever the MacBook connects.
+Because the app isn't notarized, the first time you open it you need to **right-click > Open** and confirm.
+To uninstall, open `~/Applications/FiveK Receiver.app` and choose **Uninstall**.
+
+Keep the iMac logged in, and stop it from sleeping on its own (System Preferences > Energy Saver >
+"Prevent computer from sleeping automatically when the display is off"). The display itself can sleep:
+FiveK wakes it.
 
 **First launch**: open FiveK. macOS asks for **Screen Recording** and **Local Network** permission.
 Allow both, then open FiveK again.
@@ -90,8 +95,9 @@ defaults write com.fivek.sender Host "192.168.1.20"       # skip Bonjour discove
 - **Screen Recording keeps getting denied:** run `./make-signing-cert.sh`, rebuild, then remove FiveK from
   Privacy & Security > Screen & System Audio Recording and add it again. An ad-hoc signed build doesn't
   keep the permission.
-- **Running things by hand:** on the iMac, run `./install-receiver.sh --uninstall`, then `./fivek-recv`. On the
-  MacBook, connect the virtual screen yourself, then run `build/fivek-send --host <iMac IP>`.
+- **Running things by hand:** on the iMac, uninstall the receiver (see Setup), then run
+  `"FiveK Receiver.app/Contents/MacOS/fivek-recv" --listen`. On the MacBook, connect the virtual screen
+  yourself, then run `build/fivek-send --host <iMac IP>`.
 
 ## Project layout
 
@@ -99,10 +105,9 @@ defaults write com.fivek.sender Host "192.168.1.20"       # skip Bonjour discove
 src/Sender.swift          capture -> encode -> network, with flow control (shared)
 src/FiveKApp.swift        menu bar app: permissions, BetterDisplay control, start/stop
 src/send-cli.swift        debug command-line sender
-src/fivek-recv.swift      receiver: launchd socket activation, decode, fullscreen display
+src/fivek-recv.swift      receiver: self-installer, launchd socket activation, decode, fullscreen display
 src/make-icon.swift       draws the app icon
-build.sh                  builds everything into build/
-install-receiver.sh       installs or uninstalls the launchd agent on the iMac
+build.sh                  builds FiveK.app, FiveK Receiver.app (universal) and zips into build/
 make-signing-cert.sh      creates the local "FiveK Local Signing" identity
 tools/airplay-native.swift  inspects or sets display modes with CoreGraphics (diagnostics)
 ```

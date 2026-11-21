@@ -27,7 +27,7 @@ so we stream the video ourselves.
 ## Architecture (current)
 Layout: `src/Sender.swift` (sender core, shared), `src/FiveKApp.swift` (one-click menu bar app),
 `src/send-cli.swift` (debug CLI), `src/fivek-recv.swift` (receiver), `src/make-icon.swift` (app icon),
-`build.sh`, `install-receiver.sh`, `make-signing-cert.sh`, `tools/airplay-native.swift`.
+`build.sh`, `make-signing-cert.sh`, `tools/airplay-native.swift`.
 Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
 - FiveK.app (Air, LSUIElement, signed with local "FiveK Local Signing" identity, bundle id com.fivek.sender): checks Screen Recording permission,
   launches BetterDisplay if needed, runs BetterDisplay's built-in CLI (`.../MacOS/BetterDisplay set -name="Virtual 16:9"
@@ -37,7 +37,11 @@ Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
 - Sender: ScreenCaptureKit (NV12, 709 matrix) -> VideoToolbox HEVC hardware encode (low-latency RC with
   fallback, no reordering, MaxFrameDelayCount 0, no periodic keyframes, ~60 Mbps) -> TCP (Network.framework,
   noDelay, interactiveVideo). Bonjour `_fivek._tcp` or Host setting.
-- Receiver (iMac, x86_64, macOS 12+): launchd LaunchAgent `com.fivek.receiver` with socket activation
+- Receiver: "FiveK Receiver.app" (universal x86_64+arm64, macOS 12+, ad-hoc signed). Opened by the user it is a
+  self-installer: copies itself to ~/Applications (avoids Gatekeeper translocation), writes
+  ~/Library/LaunchAgents/com.fivek.receiver.plist, `launchctl bootstrap gui/<uid>`; opened again offers Uninstall.
+  `--listen` = manual debug mode. Started by launchd = stream mode:
+  launchd LaunchAgent `com.fivek.receiver` with socket activation
   (Sockets/Listener, port 5959, Bonjour "fivek"), so nothing runs when idle. Uses launch_activate_socket
   (looked up via dlsym; not exposed to Swift), BSD sockets, a blocking reader thread, AVSampleBufferDisplayLayer
   with DisplayImmediately. Wakes the display, disables idle display sleep while running, exits on disconnect.
@@ -58,7 +62,7 @@ BetterDisplay CLI quirk: a `set` that changes nothing prints "Failed." to stderr
 state with `get` first and only sets what differs.
 
 ## Suggested test plan
-1. `./build.sh --install` on the Air; copy build/iMac to the iMac and run install-receiver.sh.
+1. `./build.sh --install` on the Air; copy build/FiveK Receiver.app to the iMac and open it once (right-click > Open).
 2. `dns-sd -B _fivek._tcp` on the Air should list the iMac.
 3. Open FiveK; check the menu bar status, the iMac log (/tmp/fivek-recv.log), and the encoder line
    (low-latency rate control true/false; run build/fivek-send in Terminal to see stdout).
