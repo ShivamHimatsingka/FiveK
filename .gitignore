@@ -1,0 +1,10 @@
+# Build output (./build.sh)
+build/
+
+# macOS
+.DS_Store
+
+# Signing material, never commit
+*.p12
+*.pem
+*.cer
