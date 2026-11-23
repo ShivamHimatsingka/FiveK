@@ -35,6 +35,10 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
     // Callbacks are delivered on the main queue.
     var onStatus: ((String) -> Void)?
     var onStop: ((_ error: String?) -> Void)?   // nil = normal stop
+    /// Called once connected, before capture starts: creates the display to stream and returns its ID
+    /// (nil = failed). Without it, `cfg.displayID` or the first 5120-pixel-wide display is used.
+    var prepareDisplay: (() async -> CGDirectDisplayID?)?
+    var targetDisplay: CGDirectDisplayID?
 
     let cfg: SenderConfig
     // All mutable state is touched only on `q`: capture callbacks, network callbacks and
@@ -145,7 +149,16 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
                 self.connected = true
                 self.status("Connected, starting capture…")
                 self.readAcks(c)
-                Task { await self.startCapture() }
+                Task {
+                    if let prep = self.prepareDisplay {
+                        guard let id = await prep() else {
+                            self.fail("Couldn't create the virtual 5K display (CGVirtualDisplay). This macOS version may not support it.")
+                            return
+                        }
+                        self.targetDisplay = id
+                    }
+                    await self.startCapture()
+                }
             case .failed(let e): self.fail("Connection failed: \(e)")
             case .waiting(let e): print("waiting: \(e)")   // retried by Network.framework until findTimeout
             default: break
@@ -190,11 +203,18 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
     // MARK: capture
     func startCapture() async {
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            // A just-created display can take a moment to show up in ScreenCaptureKit, so retry briefly.
+            var content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             var chosen: SCDisplay? = nil
-            for d in content.displays {
-                if let w = cfg.displayID { if d.displayID == w { chosen = d } }
-                else if let m = CGDisplayCopyDisplayMode(d.displayID), m.pixelWidth == 5120 { chosen = d }
+            let want = targetDisplay ?? cfg.displayID
+            for attempt in 0..<20 {
+                for d in content.displays {
+                    if let w = want { if d.displayID == w { chosen = d } }
+                    else if let m = CGDisplayCopyDisplayMode(d.displayID), m.pixelWidth == 5120 { chosen = d }
+                }
+                if chosen != nil || attempt == 19 { break }
+                try await Task.sleep(nanoseconds: 150_000_000)
+                content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             }
             guard let disp = chosen else {
                 let list = content.displays.map { "id=\($0.displayID) \($0.width)x\($0.height)pt" }.joined(separator: ", ")

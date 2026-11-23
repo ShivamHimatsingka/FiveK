@@ -1,6 +1,6 @@
 // send-cli.swift: debug command-line front end for Sender (FiveK.app is the normal way to run it).
 // Usage:  fivek-send [--host IP[:PORT]] [--mbps 60] [--fps 60] [--display ID]
-// Does NOT touch BetterDisplay: the 5120x2880 virtual screen must already be connected.
+// Creates FiveK's virtual 5K display once connected (like the app), unless --display ID picks an existing one.
 
 import Foundation
 import CoreGraphics
@@ -24,12 +24,20 @@ enum SendCLI {
             }
         }
         let s = Sender(cfg)
+        var vd: VirtualDisplay?
+        if cfg.displayID == nil {
+            s.prepareDisplay = {
+                await MainActor.run { vd = VirtualDisplay() }
+                guard let v = vd, await v.waitUntilReady() else { return nil }
+                return v.displayID
+            }
+        }
         s.onStop = { err in exit(err == nil ? 0 : 1) }
         signal(SIGINT, SIG_IGN)
         let sig = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         sig.setEventHandler { s.stop() }
         sig.resume()
         s.start()
-        withExtendedLifetime(sig) { dispatchMain() }
+        withExtendedLifetime((sig, vd)) { dispatchMain() }
     }
 }

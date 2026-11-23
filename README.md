@@ -48,20 +48,18 @@ frame rate above drops by more than half.
 
 ## Quick start
 
-You need **[BetterDisplay](https://github.com/waydabber/BetterDisplay)** (free) on the MacBook, to create
-the virtual 5K screen.
+Nothing else to install: FiveK creates its own virtual 5K display.
 
 1. **Download** `FiveK.zip` and `FiveK-Receiver.zip` from the
    **[latest release](https://github.com/ShivamHimatsingka/FiveK/releases/latest)**.
 2. **On the iMac:** unzip `FiveK-Receiver.zip`, then **right-click > Open** on **FiveK Receiver**. It
    installs itself and quits. Nothing stays running.
-3. **On the MacBook:**
-   - In BetterDisplay, create a **16:9 virtual screen** named `Virtual 16:9`.
-   - Unzip `FiveK.zip`, move **FiveK** to Applications, and **right-click > Open** it.
-   - Allow **Screen Recording** and **Local Network** when asked, then open FiveK again.
+3. **On the MacBook:** unzip `FiveK.zip`, move **FiveK** to Applications, and **right-click > Open** it.
+   Allow **Screen Recording** and **Local Network** when asked, then open FiveK again.
 
-From then on, just **open FiveK**. It connects the virtual screen, finds the iMac, wakes its display and
-starts streaming.
+From then on, just **open FiveK**. It finds the iMac, adds a 5K display called **FiveK** to your Mac, wakes
+the iMac's display and starts streaming. To choose which side of your MacBook the iMac sits on, drag the
+FiveK display in **System Settings > Displays > Arrange** while streaming. macOS remembers the position.
 
 > The apps aren't notarized by Apple, which is why the first launch needs **right-click > Open**. If macOS
 > keeps denying Screen Recording, build FiveK yourself (below): a self-built copy is signed with your own
@@ -76,8 +74,7 @@ starts streaming.
 | **Stop from the iMac** | Press **Esc** or **⌘Q**. Or move the iMac's mouse and click **Disconnect** |
 | **See live stats** | Click the menu bar icon (fps, Mbps, encode and network times) |
 
-When a session ends, the virtual screen disconnects, so your windows come back to the MacBook. If FiveK
-started BetterDisplay, it quits it too.
+When a session ends, the FiveK display is removed, so your windows come back to the MacBook.
 
 **iMac tips:** keep it logged in, and stop it from sleeping on its own (System Preferences > Energy Saver >
 *Prevent computer from sleeping automatically when the display is off*). The display itself can sleep, since
@@ -88,7 +85,7 @@ FiveK wakes it.
 ```mermaid
 flowchart LR
     subgraph MacBook["MacBook · FiveK.app (menu bar)"]
-        BD["BetterDisplay virtual screen<br/>2560×1440 HiDPI = 5120×2880 px"] --> SCK["ScreenCaptureKit<br/>only when the screen changes"]
+        BD["FiveK virtual display<br/>2560×1440 HiDPI = 5120×2880 px"] --> SCK["ScreenCaptureKit<br/>only when the screen changes"]
         SCK --> VT["VideoToolbox<br/>hardware HEVC"]
         CUR["Cursor position + shape<br/>~120×/s"]
     end
@@ -101,6 +98,9 @@ flowchart LR
     RX -. "per-frame acks" .-> VT
 ```
 
+- **Its own virtual display.** FiveK creates the 5K display itself, with CoreGraphics' `CGVirtualDisplay`
+  (the private API that display utilities such as BetterDisplay are built on). The display exists only while
+  FiveK runs, and only after the iMac has connected, so windows never land on a screen you can't see.
 - **Nothing runs when idle.** On the iMac, launchd holds the port and advertises it over Bonjour, and only
   starts the receiver when the MacBook connects. On the MacBook, FiveK runs only while you're streaming.
 - **Latency can't build up.** The iMac acknowledges every frame, and the MacBook limits how much unacknowledged
@@ -146,7 +146,6 @@ Copy the receiver to the iMac and open it once, as in Quick start.
 All optional, on the MacBook:
 
 ```bash
-defaults write com.fivek.sender VirtualScreenName "Virtual 16:9"   # BetterDisplay screen to use
 defaults write com.fivek.sender Resolution "2560x1440"             # "looks like" size on the iMac
 defaults write com.fivek.sender HiDPI -bool true                   # false = 5120×2880 at 1x (tiny text)
 defaults write com.fivek.sender Mbps -int 100                      # lower if Wi-Fi stutters
@@ -164,19 +163,22 @@ Undo any setting with `defaults delete com.fivek.sender <Name>`.
 | **Choppy, or lags when dragging windows** | Turn off **Low Power Mode** (System Settings > Battery). The stats line (`fps · Mbps · enc ms · net ms · skipped`) shows whether encoding or the network is slow. `tools/encbench.swift` benchmarks the encoder on its own. |
 | **"Couldn't find the iMac"** | The iMac must be on, logged in and on the same network. Check with `dns-sd -B _fivek._tcp` on the MacBook, or set `Host` (see Settings). |
 | **Screen Recording keeps being denied** | Run `./make-signing-cert.sh`, rebuild, then remove FiveK from *Privacy & Security > Screen & System Audio Recording* and add it again. |
-| **"No virtual screen named…"** | Create a 16:9 virtual screen in BetterDisplay, or set `VirtualScreenName` to the name of yours. |
+| **"Couldn't create the virtual 5K display"** | FiveK relies on a private macOS API (`CGVirtualDisplay`, available since macOS 11). If a future macOS update breaks it, please open an issue. |
+| **iMac is on the wrong side** | While streaming, drag the **FiveK** display in System Settings > Displays > Arrange. |
 | **Uninstall the receiver** | Open `~/Applications/FiveK Receiver.app` on the iMac and choose **Uninstall**. |
 
 **Logs:** `~/Library/Logs/FiveK.log` on the MacBook, `/tmp/fivek-recv.log` on the iMac.
 
 **Running by hand:** uninstall the receiver, then run `"FiveK Receiver.app/Contents/MacOS/fivek-recv" --listen`
-on the iMac. On the MacBook, connect the virtual screen yourself and run `build/fivek-send --host <iMac IP>`.
+on the iMac. On the MacBook, run `build/fivek-send --host <iMac IP>` (it creates the virtual display too).
 
 ## Project layout
 
 ```
 src/Sender.swift            capture → encode → network, flow control, cursor, refinement
-src/FiveKApp.swift          menu bar app: permissions, BetterDisplay control, start/stop
+src/FiveKApp.swift          menu bar app: permissions, start/stop, settings
+src/VirtualDisplay.swift    creates the 5K virtual display (CGVirtualDisplay)
+src/CGVirtualDisplay.h      declarations for the private CGVirtualDisplay classes
 src/fivek-recv.swift        receiver: self-installer, launchd socket activation, decode, display
 src/send-cli.swift          debug command-line sender
 src/make-icon.swift         draws the app icon

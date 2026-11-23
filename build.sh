@@ -3,7 +3,7 @@
 #   build/FiveK.app              sender for the MacBook   (./build.sh --install copies it to /Applications)
 #   build/FiveK Receiver.app     receiver for the iMac: copy it over and double-click it once (it installs itself)
 #   build/FiveK.zip, build/FiveK-Receiver.zip   the same apps zipped, for AirDrop / GitHub releases
-#   build/fivek-send             debug CLI sender (needs the virtual screen already connected)
+#   build/fivek-send             debug CLI sender (creates the virtual display itself; --host IP to skip Bonjour)
 set -euo pipefail
 cd "$(dirname "$0")"
 rm -rf build && mkdir -p build
@@ -13,7 +13,7 @@ swift src/make-icon.swift build/AppIcon.icns >/dev/null && rm -f build/AppIcon.p
 echo "Building FiveK.app (Air)…"
 APP=build/FiveK.app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O src/Sender.swift src/FiveKApp.swift -o "$APP/Contents/MacOS/FiveK"
+swiftc -O -import-objc-header src/CGVirtualDisplay.h src/Sender.swift src/VirtualDisplay.swift src/FiveKApp.swift -o "$APP/Contents/MacOS/FiveK"
 cp build/AppIcon.icns "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -48,7 +48,7 @@ else
 fi
 
 echo "Building fivek-send (debug CLI)…"
-swiftc -O src/Sender.swift src/send-cli.swift -o build/fivek-send
+swiftc -O -import-objc-header src/CGVirtualDisplay.h src/Sender.swift src/VirtualDisplay.swift src/send-cli.swift -o build/fivek-send
 
 echo "Building FiveK Receiver.app (iMac, universal, macOS 12+)…"
 RAPP="build/FiveK Receiver.app"

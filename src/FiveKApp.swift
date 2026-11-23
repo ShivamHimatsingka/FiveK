@@ -1,12 +1,11 @@
 // FiveKApp.swift: the one-click launcher (FiveK.app, menu bar only, no Dock icon).
 //
-// Launch it  -> starts BetterDisplay if needed, connects the virtual screen at 2560x1440 HiDPI
-//               (5120x2880 pixels), finds the iMac over Bonjour and streams.
-// Launch it again (click the app icon) or menu bar > Stop -> stops streaming, disconnects the virtual
-//               screen so windows come back to the Air, quits BetterDisplay if FiveK started it, exits.
+// Launch it  -> finds the iMac over Bonjour, then creates FiveK's own virtual display at 2560x1440 HiDPI
+//               (5120x2880 pixels) and streams it. No BetterDisplay needed.
+// Launch it again (click the app icon) or menu bar > Stop -> stops streaming and removes the virtual display,
+//               so windows come back to the Air, then exits.
 //
 // Settings (optional, defaults shown):
-//   defaults write com.fivek.sender VirtualScreenName "Virtual 16:9"
 //   defaults write com.fivek.sender Resolution "2560x1440"    # what the iMac "looks like"
 //   defaults write com.fivek.sender HiDPI -bool true           # false = 5120x2880 at 1x (tiny text)
 //   defaults write com.fivek.sender Mbps -int 100
@@ -17,50 +16,6 @@
 import Cocoa
 import CoreGraphics
 import ScreenCaptureKit
-
-// MARK: BetterDisplay control (via its built-in CLI; the app must be running)
-
-enum BetterDisplay {
-    static let bundleID = "pro.betterdisplay.BetterDisplay"
-
-    static var appURL: URL? { NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) }
-    static var running: NSRunningApplication? {
-        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
-    }
-
-    /// Runs `BetterDisplay <args>` and returns (success, output). Only call while the app is running:
-    /// the binary forwards the command to the running instance.
-    @discardableResult
-    static func cli(_ args: [String]) -> (Bool, String) {
-        guard let url = appURL?.appendingPathComponent("Contents/MacOS/BetterDisplay") else { return (false, "") }
-        let p = Process()
-        p.executableURL = url
-        p.arguments = args
-        let pipe = Pipe()
-        p.standardOutput = pipe; p.standardError = pipe
-        do { try p.run() } catch { return (false, "\(error)") }
-        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        p.waitUntilExit()
-        let text = out.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (p.terminationStatus == 0 && text != "Failed.", text)
-    }
-
-    /// Launches BetterDisplay in the background if needed. Returns true if we launched it.
-    static func ensureRunning() async throws -> Bool {
-        if running != nil { return false }
-        guard let url = appURL else { throw Failure("BetterDisplay isn't installed.") }
-        let c = NSWorkspace.OpenConfiguration()
-        c.activates = false
-        c.addsToRecentItems = false
-        _ = try await NSWorkspace.shared.openApplication(at: url, configuration: c)
-        // Wait until it answers CLI requests.
-        for _ in 0..<40 {
-            try await Task.sleep(nanoseconds: 250_000_000)
-            if cli(["get", "-identifiers"]).0 { return true }
-        }
-        throw Failure("BetterDisplay started but isn't answering. Check Settings > Application > Integration > CLI access.")
-    }
-}
 
 struct Failure: Error, LocalizedError {
     let msg: String
@@ -75,11 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var item: NSStatusItem!
     var statusLine = NSMenuItem(title: "Starting…", action: nil, keyEquivalent: "")
     var sender: Sender?
-    var launchedBetterDisplay = false
-    var connectedScreen = false
+    var virtualDisplay: VirtualDisplay?   // the display exists exactly as long as this is set
     var quitting = false
-
-    var screenName: String { d.string(forKey: "VirtualScreenName") ?? "Virtual 16:9" }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -118,53 +70,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 throw Failure("FiveK needs Screen Recording permission. Turn it on in System Settings > Privacy & Security > Screen & System Audio Recording, then open FiveK again.")
             }
 
-            // 2. BetterDisplay running + virtual screen connected in the right mode.
-            setStatus("Starting BetterDisplay…")
-            launchedBetterDisplay = try await BetterDisplay.ensureRunning()
-            let name = screenName
-            setStatus("Connecting \(name)…")
-            // BetterDisplay answers "Failed." to a `set` that changes nothing (e.g. connecting an already
-            // connected screen), so read the current state first and only set what differs.
-            let (exists, state) = BetterDisplay.cli(["get", "-name=\(name)", "-connected"])
-            guard exists else {
-                throw Failure("BetterDisplay has no virtual screen named \"\(name)\". Create a 16:9 virtual screen in BetterDisplay, or set its name with: defaults write com.fivek.sender VirtualScreenName \"<name>\"")
-            }
-            if state != "on" {
-                guard BetterDisplay.cli(["set", "-name=\(name)", "-connected=on"]).0 else {
-                    throw Failure("BetterDisplay couldn't connect \"\(name)\".")
-                }
-            }
-            connectedScreen = true   // disconnect on stop either way, so windows come back to the Air
-            let res = d.string(forKey: "Resolution") ?? "2560x1440"
+            // 2. Stream. The virtual display is created only once the iMac has connected, so windows never
+            //    jump onto a display nobody can see.
+            let res = (d.string(forKey: "Resolution") ?? "2560x1440").split(separator: "x").compactMap { Int($0) }
+            let (pw, ph) = res.count == 2 ? (res[0], res[1]) : (2560, 1440)
             let hidpi = d.object(forKey: "HiDPI") as? Bool ?? true
-            let curRes = BetterDisplay.cli(["get", "-name=\(name)", "-resolution"]).1
-            let curHiDPI = BetterDisplay.cli(["get", "-name=\(name)", "-hiDPI"]).1 == "on"
-            if curRes != res || curHiDPI != hidpi {
-                // Retry briefly: right after connecting, the mode list may not be ready yet.
-                var done = false
-                for _ in 0..<8 where !done {
-                    done = BetterDisplay.cli(["set", "-name=\(name)", "-resolution=\(res)", "-hiDPI=\(hidpi ? "on" : "off")"]).0
-                    if !done { try await Task.sleep(nanoseconds: 250_000_000) }
-                }
-                // "Failed." can also mean BetterDisplay already restored that mode by itself, so check.
-                let nowRes = BetterDisplay.cli(["get", "-name=\(name)", "-resolution"]).1
-                let nowHiDPI = BetterDisplay.cli(["get", "-name=\(name)", "-hiDPI"]).1 == "on"
-                print("BetterDisplay mode: wanted \(res) HiDPI \(hidpi), now \(nowRes) HiDPI \(nowHiDPI)\(done ? "" : " (set reported Failed.)")")
-            }
-
-            // 3. Wait for macOS to show it as a 5120-pixel-wide display.
-            guard let displayID = try await waitForDisplay(pixelWidth: 5120) else {
-                throw Failure("\(name) didn't come up at 5120 pixels wide. Check its resolution in BetterDisplay (\(res), HiDPI \(hidpi ? "on" : "off")).")
-            }
-
-            // 4. Stream.
             var cfg = SenderConfig()
-            cfg.displayID = displayID
             if let h = d.string(forKey: "Host"), !h.isEmpty { cfg.host = h }
             if d.integer(forKey: "Mbps") > 0 { cfg.mbps = d.integer(forKey: "Mbps") }
             if d.integer(forKey: "FPS") > 0 { cfg.fps = d.integer(forKey: "FPS") }
             cfg.lowLatencyRC = d.bool(forKey: "LowLatencyRC")
             let s = Sender(cfg)
+            s.prepareDisplay = { [weak self] in await self?.makeDisplay(pw, ph, hidpi) }
             s.onStatus = { [weak self] in self?.setStatus($0) }
             s.onStop = { [weak self] err in self?.finish(err) }
             sender = s
@@ -174,16 +91,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func waitForDisplay(pixelWidth: Int) async throws -> CGDirectDisplayID? {
-        for _ in 0..<40 {
-            var ids = [CGDirectDisplayID](repeating: 0, count: 16); var n: UInt32 = 0
-            CGGetOnlineDisplayList(16, &ids, &n)
-            for id in ids.prefix(Int(n)) where CGDisplayIsBuiltin(id) == 0 {
-                if let m = CGDisplayCopyDisplayMode(id), m.pixelWidth == pixelWidth { return id }
-            }
-            try await Task.sleep(nanoseconds: 250_000_000)
+    @MainActor
+    func makeDisplay(_ w: Int, _ h: Int, _ hidpi: Bool) async -> CGDirectDisplayID? {
+        setStatus("Creating the 5K display…")
+        guard let v = VirtualDisplay(pointsW: w, pointsH: h, hiDPI: hidpi) else {
+            print("CGVirtualDisplay creation failed"); return nil
         }
-        return nil
+        virtualDisplay = v
+        let ok = await v.waitUntilReady()
+        let m = CGDisplayCopyDisplayMode(v.displayID)
+        print("Virtual display \(v.displayID): \(m?.width ?? 0)x\(m?.height ?? 0) pt, \(m?.pixelWidth ?? 0)x\(m?.pixelHeight ?? 0) px, ready=\(ok)")
+        return ok ? v.displayID : nil
     }
 
     @objc func stopClicked() {
@@ -195,8 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func finish(_ error: String?) {
         guard !quitting else { return }
         quitting = true
-        if connectedScreen { BetterDisplay.cli(["set", "-name=\(screenName)", "-connected=off"]) }
-        if launchedBetterDisplay { BetterDisplay.running?.terminate() }
+        virtualDisplay = nil   // removes the display; windows move back to the Air
         if let e = error {
             NSApp.activate(ignoringOtherApps: true)
             let a = NSAlert()
@@ -209,10 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // Quit from elsewhere (logout, Activity Monitor): still put the displays back.
-        if !quitting { quitting = true; self.sender?.stop()
-            if connectedScreen { BetterDisplay.cli(["set", "-name=\(screenName)", "-connected=off"]) }
-            if launchedBetterDisplay { BetterDisplay.running?.terminate() }
-        }
+        if !quitting { quitting = true; self.sender?.stop(); virtualDisplay = nil }
         return .terminateNow
     }
 }

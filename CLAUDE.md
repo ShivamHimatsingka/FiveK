@@ -12,7 +12,8 @@ so we stream the video ourselves.
   (hardware HEVC encode only; ScreenCaptureKit delivers frames only on change).
 - Receiver: 2020 Intel i5 27" iMac 5K, base config, macOS Monterey (12) (Radeon Pro, Intel UHD 630, T2, Wi-Fi 5).
   Resources are NOT a concern here. Hardware HEVC decode available.
-- Source display: BetterDisplay-created virtual display, 5120x2880 (already set up on the Air).
+- Source display: FiveK's own virtual display via private CGVirtualDisplay (src/VirtualDisplay.swift).
+  BetterDisplay is NO LONGER used or needed (removed 2026-11-23 at the user's request).
 - Network: Wi-Fi preferred (USB cable is not an option; no Thunderbolt link). Ethernet is acceptable for debugging.
 
 ## User constraints / preferences
@@ -29,11 +30,12 @@ Layout: `src/Sender.swift` (sender core, shared), `src/FiveKApp.swift` (one-clic
 `src/send-cli.swift` (debug CLI), `src/fivek-recv.swift` (receiver), `src/make-icon.swift` (app icon),
 `build.sh`, `make-signing-cert.sh`, `tools/airplay-native.swift`.
 Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
-- FiveK.app (Air, LSUIElement, signed with local "FiveK Local Signing" identity, bundle id com.fivek.sender): checks Screen Recording permission,
-  launches BetterDisplay if needed, runs BetterDisplay's built-in CLI (`.../MacOS/BetterDisplay set -name="Virtual 16:9"
-  -connected=on`, then `-resolution=2560x1440 -hiDPI=on`), waits for a 5120-px-wide CG display, then streams.
-  Stop (menu, re-launching the app, or receiver closing) disconnects the virtual screen and quits BetterDisplay
-  if FiveK launched it. Settings via `defaults` (see README).
+- FiveK.app (Air, LSUIElement, signed with local "FiveK Local Signing" identity, bundle id com.fivek.sender): checks
+  Screen Recording permission, starts the Sender; once the TCP connection is up, Sender.prepareDisplay creates a
+  VirtualDisplay (CGVirtualDisplay, name "FiveK", 2560x1440 pt HiDPI = 5120x2880 px, 27" size, sRGB primaries,
+  fixed vendor 0xF15C / product 0x5000 / serial 1 so macOS remembers its arrangement) and capture starts on it.
+  Releasing the object (stop/quit/crash) removes the display. Built with -import-objc-header src/CGVirtualDisplay.h
+  (Swift renames applySettings: to apply(_:)). Settings via `defaults` (see README).
 - Sender: ScreenCaptureKit (NV12, 709 matrix, captureResolution .best, no cursor) -> VideoToolbox HEVC
   hardware encode (NORMAL rate control by default, low-latency RC optional via LowLatencyRC; no reordering,
   no periodic keyframes, 100 Mbps) -> TCP (Network.framework,
@@ -74,8 +76,9 @@ refinement, 100 Mbps) are NOT yet tested on the iMac. Stats line now shows enc/n
 Working end to end on the real hardware (MacBook Air M5 -> 2020 iMac over Wi-Fi), released as v0.1.0
 (GitHub release with FiveK.zip + FiveK-Receiver.zip). Commits are authored by Shivam Himatsingka only
 (no Claude co-author trailers; history was rewritten once to remove them).
-BetterDisplay CLI quirk: a `set` that changes nothing prints "Failed." to stderr and exits 1, so the app reads
-state with `get` first and only sets what differs.
+Virtual display verified locally 2026-11-23 with a fake receiver (scratch script acking frames on 127.0.0.1):
+display created at 2560x1440 pt / 5120x2880 px, captured and encoded (51 fps burst, ~22 ms encode), removed on
+quit. Idle cost: ~5 encodes/s on a still desktop (1 Hz menu bar clock change + up to 3 refinement passes each).
 
 ## Third test (2026-11-21, Low Power Mode off, normal RC)
 fps while active median 30, p90 42, max 50; skipped <= 2/s; net median 8 ms (p90 12); encode median 37 ms
@@ -92,7 +95,8 @@ newest (user said current performance is fine for now).
 
 ## Known risks / likely next work
 - TCP head-of-line blocking on Wi-Fi loss -> may need UDP + packetization + keyframe request on loss.
-- ScreenCaptureKit with a BetterDisplay virtual display (display selection by pixel width 5120).
+- CGVirtualDisplay is private API: a macOS update could break or change it (same risk BetterDisplay has).
+- Refinement re-encodes 3x after every change, even tiny ones (clock): could skip it for small frames.
 - Latency tuning (bitrate/fps, queueDepth, encoder settings); 30 fps fallback.
 - Colour tags: sender tags 709 primaries/matrix + sRGB transfer, receiver sets the same; unverified visually.
 - Keyframe request while the Air screen is static is only served on the next screen change.
