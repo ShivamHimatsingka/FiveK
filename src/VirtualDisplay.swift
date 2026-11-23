@@ -10,21 +10,25 @@ import CoreGraphics
 
 final class VirtualDisplay {
     let display: CGVirtualDisplay
-    let pointsW: Int, pointsH: Int, hiDPI: Bool
+    private(set) var pointsW: Int, pointsH: Int, hiDPI: Bool
+    let maxPixelW: Int, maxPixelH: Int
     var displayID: CGDirectDisplayID { display.displayID }
     var pixelW: Int { hiDPI ? pointsW * 2 : pointsW }
     var pixelH: Int { hiDPI ? pointsH * 2 : pointsH }
 
     /// `pointsW` x `pointsH` is the "looks like" size; with `hiDPI` the display has twice the pixels each way.
-    init?(name: String = "FiveK", pointsW: Int = 2560, pointsH: Int = 1440, hiDPI: Bool = true) {
+    /// `maxPixelW` x `maxPixelH` is the largest size `reconfigure` can switch to without recreating the display.
+    init?(name: String = "FiveK", pointsW: Int = 2560, pointsH: Int = 1440, hiDPI: Bool = true,
+          maxPixelW: Int = 5120, maxPixelH: Int = 2880) {
         self.pointsW = pointsW; self.pointsH = pointsH; self.hiDPI = hiDPI
         let pw = hiDPI ? pointsW * 2 : pointsW, ph = hiDPI ? pointsH * 2 : pointsH
+        self.maxPixelW = max(pw, maxPixelW); self.maxPixelH = max(ph, maxPixelH)
 
         let d = CGVirtualDisplayDescriptor()
         d.setDispatchQueue(DispatchQueue.main)
         d.name = name
-        d.maxPixelsWide = UInt32(pw)
-        d.maxPixelsHigh = UInt32(ph)
+        d.maxPixelsWide = UInt32(self.maxPixelW)
+        d.maxPixelsHigh = UInt32(self.maxPixelH)
         d.sizeInMillimeters = CGSize(width: 597, height: 336)   // a 27" 16:9 panel
         d.vendorID = 0xF15C; d.productID = 0x5000; d.serialNum = 1
         // sRGB / BT.709 primaries and D65 white, matching how the stream is tagged.
@@ -40,6 +44,22 @@ final class VirtualDisplay {
         s.modes = [CGVirtualDisplayMode(width: UInt(pointsW), height: UInt(pointsH), refreshRate: 60)]
         guard v.apply(s) else { return nil }
         display = v
+    }
+
+    func fits(pointsW w: Int, pointsH h: Int, hiDPI hd: Bool) -> Bool {
+        (hd ? w * 2 : w) <= maxPixelW && (hd ? h * 2 : h) <= maxPixelH
+    }
+
+    /// Changes the display's size in place (windows on it stay put). False if it needs more pixels than
+    /// the display was created with; then create a new VirtualDisplay instead.
+    func reconfigure(pointsW w: Int, pointsH h: Int, hiDPI hd: Bool) -> Bool {
+        guard fits(pointsW: w, pointsH: h, hiDPI: hd) else { return false }
+        let s = CGVirtualDisplaySettings()
+        s.hiDPI = hd ? 1 : 0
+        s.modes = [CGVirtualDisplayMode(width: UInt(w), height: UInt(h), refreshRate: 60)]
+        guard display.apply(s) else { return false }
+        pointsW = w; pointsH = h; hiDPI = hd
+        return true
     }
 
     /// Waits for macOS to bring the display online, then makes sure the wanted mode is active.

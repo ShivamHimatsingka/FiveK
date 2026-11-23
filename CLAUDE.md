@@ -34,7 +34,12 @@ Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
   Screen Recording permission, starts the Sender; once the TCP connection is up, Sender.prepareDisplay creates a
   VirtualDisplay (CGVirtualDisplay, name "FiveK", 2560x1440 pt HiDPI = 5120x2880 px, 27" size, sRGB primaries,
   fixed vendor 0xF15C / product 0x5000 / serial 1 so macOS remembers its arrangement) and capture starts on it.
-  Releasing the object (stop/quit/crash) removes the display. Built with -import-objc-header src/CGVirtualDisplay.h
+  Releasing the object (stop/quit/crash) removes the display.
+  Menu bar > Display Resolution (stored as defaults DisplayMode; default "5k"): Auto (match receiver) or presets
+  5k 2560x1440@2x, 4096 2048x1152@2x, 4k 1920x1080@2x, 1440 2560x1440@1x, 1080 1920x1080@1x. Changing it while
+  streaming calls Sender.reconfigure: stop SCStream + invalidate encoder (generation counter drops stale encoder
+  callbacks; inFlight reset to sentFrames.count), VirtualDisplay.reconfigure applies new CGVirtualDisplaySettings
+  IN PLACE (same displayID, windows stay; display created with max 5120x2880 or larger), restart capture, keyframe. Built with -import-objc-header src/CGVirtualDisplay.h
   (Swift renames applySettings: to apply(_:)). Settings via `defaults` (see README).
 - Sender: ScreenCaptureKit (NV12, 709 matrix, captureResolution .best, no cursor) -> VideoToolbox HEVC
   hardware encode (NORMAL rate control by default, low-latency RC optional via LowLatencyRC; no reordering,
@@ -58,7 +63,10 @@ Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
   type 3 = cursor position ([x u16][y u16] fraction*65535, [visible u8]), ~120 Hz, on change.
   type 4 = cursor image ([hotX][hotY][w][h] u16 in 1/100 pt, then PNG), polled at 20 Hz via
   NSCursor.currentSystemCursor (called by selector; to-be-deprecated). Capture uses showsCursor=false.
-  Back-channel (receiver -> sender): 0x01 per type-2 message received (ack), 0x4B ('K') = keyframe request.
+  type 5 = display info [ptW][ptH][pxW][pxH] u16, sent at every capture (re)start; receiver scales the cursor by
+  its own points width / sender points width, and flushes the layer when the stream dimensions change.
+  Back-channel (receiver -> sender): 0x01 per type-2 message received (ack), 0x4B ('K') = keyframe request,
+  0x52 ('R') + [ptW][ptH][pxW][pxH] u16 = receiver screen, sent right after accept (Auto mode waits up to 0.8 s).
   Flow control: always 2 unacked frames, up to 5 while unacked bytes < 600 KB. Frames captured while full are
   skipped before encoding, but the newest is held and sent when a slot frees.
   Refinement: after 120 ms with no new frame, the last frame is re-encoded up to 3 times (low-latency RC gives
@@ -78,7 +86,9 @@ Working end to end on the real hardware (MacBook Air M5 -> 2020 iMac over Wi-Fi)
 (no Claude co-author trailers; history was rewritten once to remove them).
 Virtual display verified locally 2026-11-23 with a fake receiver (scratch script acking frames on 127.0.0.1):
 display created at 2560x1440 pt / 5120x2880 px, captured and encoded (51 fps burst, ~22 ms encode), removed on
-quit. Idle cost: ~5 encodes/s on a still desktop (1 Hz menu bar clock change + up to 3 refinement passes each).
+quit. Resolution menu verified locally 2026-11-23 the same way: Auto with a fake 1920x1080 1x receiver made a
+1920x1080 display (encode ~6 ms); switching to 5K from the menu resized display 7 in place and restarted the
+stream on the same connection (new type 5 + keyframe). Idle cost: ~5 encodes/s on a still desktop (1 Hz menu bar clock change + up to 3 refinement passes each).
 
 ## Third test (2026-11-21, Low Power Mode off, normal RC)
 fps while active median 30, p90 42, max 50; skipped <= 2/s; net median 8 ms (p90 12); encode median 37 ms

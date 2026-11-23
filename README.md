@@ -72,7 +72,26 @@ FiveK display in **System Settings > Displays > Arrange** while streaming. macOS
 | **Start** | Open FiveK (from the Dock, Spotlight or Launchpad) |
 | **Stop from the MacBook** | Click FiveK again, or use the menu bar icon > **Stop** |
 | **Stop from the iMac** | Press **Esc** or **⌘Q**. Or move the iMac's mouse and click **Disconnect** |
+| **Change the resolution** | Menu bar icon > **Display Resolution** (applies instantly, while streaming) |
 | **See live stats** | Click the menu bar icon (fps, Mbps, encode and network times) |
+
+### Display resolution
+
+The default is **5K**: the iMac looks like 2560×1440, drawn with 5120×2880 pixels, exactly like its own screen.
+You can switch at any time from the menu bar, even mid-stream. The virtual display is resized in place, so your
+windows stay where they are.
+
+| Option | Looks like | Pixels streamed | When to use it |
+|---|---|---|---|
+| **Auto** | the iMac's own setting | the iMac's native pixels | Match whatever screen the receiver has |
+| **5K** (default) | 2560×1440 | 5120×2880 | Sharpest; what a 5K iMac shows natively |
+| **Larger text** | 2048×1152 | 4096×2304 | Bigger UI, still HiDPI |
+| **4K** | 1920×1080 | 3840×2160 | Big UI; encodes faster, so it's smoother |
+| **1440p** | 2560×1440 | 2560×1440 | Low-DPI; much faster, visibly softer |
+| **1080p** | 1920×1080 | 1920×1080 | Fastest; for slow Wi-Fi |
+
+Smaller sizes are scaled up to fill the iMac's screen. **Auto** needs FiveK Receiver 0.2 or later on the iMac (it
+reports its screen when the MacBook connects). With an older receiver, Auto falls back to 5K.
 
 When a session ends, the FiveK display is removed, so your windows come back to the MacBook.
 
@@ -123,8 +142,10 @@ Every message is `[type u8][length u32 big-endian][payload]`.
 | 2 | MacBook → iMac | Frame: `[flags u8, 1 = keyframe]` + 4-byte length-prefixed NAL units |
 | 3 | MacBook → iMac | Cursor position: `[x u16][y u16]` as a fraction of the screen × 65535, `[visible u8]` |
 | 4 | MacBook → iMac | Cursor image: `[hotX][hotY][width][height]` as u16 in 1/100 pt, then PNG |
+| 5 | MacBook → iMac | Display info, sent whenever capture (re)starts: `[pointsW][pointsH][pixelW][pixelH]` as u16 |
 
-Back-channel, iMac → MacBook, one byte each: `0x01` acknowledges a frame; `0x4B` (`K`) requests a keyframe.
+Back-channel, iMac → MacBook: `0x01` acknowledges a frame; `0x4B` (`K`) requests a keyframe; `0x52` (`R`) plus
+`[pointsW][pointsH][pixelW][pixelH]` (u16) reports the iMac's screen, sent once when the connection opens.
 </details>
 
 ## Building from source
@@ -146,8 +167,7 @@ Copy the receiver to the iMac and open it once, as in Quick start.
 All optional, on the MacBook:
 
 ```bash
-defaults write com.fivek.sender Resolution "2560x1440"             # "looks like" size on the iMac
-defaults write com.fivek.sender HiDPI -bool true                   # false = 5120×2880 at 1x (tiny text)
+defaults write com.fivek.sender DisplayMode auto                   # same as the menu: auto, 5k, 4096, 4k, 1440, 1080
 defaults write com.fivek.sender Mbps -int 100                      # lower if Wi-Fi stutters
 defaults write com.fivek.sender FPS -int 60                        # 30 halves the bandwidth
 defaults write com.fivek.sender Host "192.168.1.20"                # skip Bonjour, connect to this IP

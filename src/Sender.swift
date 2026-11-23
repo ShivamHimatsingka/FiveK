@@ -6,7 +6,9 @@
 //   type 2 = frame ([flags u8, 1=key][HEVC NALs, 4-byte length-prefixed])
 //   type 3 = cursor position ([x u16][y u16] as fractions of the display * 65535, [visible u8])
 //   type 4 = cursor image ([hotX u16][hotY u16][width u16][height u16] in 1/100 points, then PNG bytes)
-// Receiver -> sender: one byte per type-2 message received (0x01 = ack), 0x4B ('K') = please send a keyframe.
+//   type 5 = display info, sent whenever capture (re)starts ([pointsW u16][pointsH u16][pixelW u16][pixelH u16])
+// Receiver -> sender: 0x01 = ack (one per type-2 message), 0x4B ('K') = please send a keyframe,
+//   0x52 ('R') + [pointsW u16][pointsH u16][pixelW u16][pixelH u16] = the receiver's screen, sent on connect.
 // Flow control: always up to `minInFlight` unacknowledged frames, and up to `maxInFlight` while the unacked
 // bytes stay under `byteBudget`, so small frames pipeline freely but big ones can't queue up in socket buffers.
 // The cursor is NOT in the video: it's sent separately ~120x/s and drawn by the receiver, so it moves at
@@ -18,6 +20,13 @@ import AppKit
 import VideoToolbox
 import CoreMedia
 import Network
+
+/// The receiver's screen, as it reports it on connect (used by Auto resolution).
+struct ReceiverScreen: Equatable {
+    var pointsW: Int, pointsH: Int, pixelW: Int, pixelH: Int
+    var hiDPI: Bool { pixelW >= pointsW * 2 }
+    var description: String { "\(pointsW)×\(pointsH)\(hiDPI ? " HiDPI" : "") (\(pixelW)×\(pixelH) px)" }
+}
 
 struct SenderConfig {
     var host: String? = nil          // nil = find the receiver via Bonjour (_fivek._tcp)
@@ -36,9 +45,16 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
     var onStatus: ((String) -> Void)?
     var onStop: ((_ error: String?) -> Void)?   // nil = normal stop
     /// Called once connected, before capture starts: creates the display to stream and returns its ID
-    /// (nil = failed). Without it, `cfg.displayID` or the first 5120-pixel-wide display is used.
-    var prepareDisplay: (() async -> CGDirectDisplayID?)?
+    /// (nil = failed). Gets the receiver's screen if it reported one within `screenWait`.
+    /// Without it, `cfg.displayID` or the first 5120-pixel-wide display is used.
+    var prepareDisplay: ((ReceiverScreen?) async -> CGDirectDisplayID?)?
     var targetDisplay: CGDirectDisplayID?
+    var onReceiverScreen: ((ReceiverScreen) -> Void)?   // main queue
+    var receiverScreen: ReceiverScreen?                 // on q
+    var screenWait: TimeInterval = 0.8                  // how long to wait for it before creating the display
+    var ackBuf: [UInt8] = []
+    var generation = 0                                  // bumped on every capture restart
+    var timersStarted = false
 
     let cfg: SenderConfig
     // All mutable state is touched only on `q`: capture callbacks, network callbacks and
@@ -151,7 +167,12 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
                 self.readAcks(c)
                 Task {
                     if let prep = self.prepareDisplay {
-                        guard let id = await prep() else {
+                        // Give the receiver a moment to report its screen (an older receiver never does).
+                        let deadline = Date().addingTimeInterval(self.screenWait)
+                        while Date() < deadline, self.q.sync(execute: { self.receiverScreen }) == nil {
+                            try? await Task.sleep(nanoseconds: 50_000_000)
+                        }
+                        guard let id = await prep(self.q.sync { self.receiverScreen }) else {
                             self.fail("Couldn't create the virtual 5K display (CGVirtualDisplay). This macOS version may not support it.")
                             return
                         }
@@ -170,19 +191,58 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
     func readAcks(_ c: NWConnection) {
         c.receive(minimumIncompleteLength: 1, maximumLength: 256) { [weak self] data, _, done, err in
             guard let self = self, !self.stopped else { return }
-            if let d = data {
-                for b in d {
-                    if b == 0x4B { self.needKey = true; continue }
-                    if !self.sentFrames.isEmpty {
-                        let f = self.sentFrames.removeFirst()
-                        self.unackedBytes -= f.bytes
-                        self.netMs += Double(DispatchTime.now().uptimeNanoseconds - f.t) / 1e6; self.latN += 1
-                    }
-                    self.frameDone()
-                }
-            }
+            if let d = data { self.ackBuf += d; self.parseBackChannel() }
             if done || err != nil { self.stop("The iMac closed the display.") ; return }
             self.readAcks(c)
+        }
+    }
+
+    /// Back-channel bytes from the receiver (on q). 'R' messages are 9 bytes and may arrive split.
+    func parseBackChannel() {
+        var i = 0
+        while i < ackBuf.count {
+            let b = ackBuf[i]
+            if b == 0x52 {
+                guard i + 9 <= ackBuf.count else { break }   // wait for the rest
+                func u16(_ k: Int) -> Int { Int(ackBuf[i + k]) << 8 | Int(ackBuf[i + k + 1]) }
+                let rs = ReceiverScreen(pointsW: u16(1), pointsH: u16(3), pixelW: u16(5), pixelH: u16(7))
+                receiverScreen = rs
+                print("Receiver screen: \(rs.description)")
+                DispatchQueue.main.async { self.onReceiverScreen?(rs) }
+                i += 9; continue
+            }
+            i += 1
+            if b == 0x4B { needKey = true; continue }
+            if b != 0x01 { continue }
+            if !sentFrames.isEmpty {
+                let f = sentFrames.removeFirst()
+                unackedBytes -= f.bytes
+                netMs += Double(DispatchTime.now().uptimeNanoseconds - f.t) / 1e6; latN += 1
+            }
+            frameDone()
+        }
+        ackBuf.removeFirst(i)
+    }
+
+    /// Switches to a different display mode while connected: stops capture and the encoder, lets `prepare`
+    /// resize (or recreate) the display, then restarts capture with a fresh keyframe. The connection stays up.
+    func reconfigure(_ prepare: @escaping (ReceiverScreen?) async -> CGDirectDisplayID?) {
+        Task {
+            var old: SCStream?
+            let rs: ReceiverScreen? = q.sync {
+                old = stream; stream = nil
+                generation += 1
+                if let s = session { VTCompressionSessionInvalidate(s); session = nil }
+                held = nil; lastFrame = nil; refinesLeft = 0
+                inFlight = sentFrames.count   // frames still inside the old encoder are gone
+                needKey = true
+                return receiverScreen
+            }
+            try? await old?.stopCapture()
+            status("Switching resolution…")
+            guard let id = await prepare(rs) else { fail("Couldn't change the virtual display."); return }
+            targetDisplay = id
+            await startCapture()
         }
     }
 
@@ -240,16 +300,25 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
             let s = SCStream(filter: filter, configuration: sc, delegate: self)
             try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: q)
 
+            let ptW = CGDisplayCopyDisplayMode(disp.displayID)?.width ?? w / 2
+            let ptH = CGDisplayCopyDisplayMode(disp.displayID)?.height ?? h / 2
             var ok = false
             q.sync {
                 guard !stopped else { return }
                 pixelW = w; pixelH = h; stream = s; displayID = disp.displayID
                 ok = makeEncoder()
+                func u16(_ v: Int) -> [UInt8] { [UInt8(v >> 8 & 255), UInt8(v & 255)] }
+                sendMsg(5, Data(u16(ptW) + u16(ptH) + u16(w) + u16(h)))   // lets the receiver size the cursor
+                lastCursor = nil; lastCursorPNG = Data()                   // resend cursor for the new size
             }
             guard ok else { if !stopped { fail("Could not create the HEVC hardware encoder at \(w)x\(h).") }; return }
             try await s.startCapture()
-            q.async { self.startStats(); self.startRefiner(); self.startCursor() }
-            status("Streaming \(w)x\(h)")
+            q.async {
+                guard !self.timersStarted else { return }
+                self.timersStarted = true
+                self.startStats(); self.startRefiner(); self.startCursor()
+            }
+            status("Streaming \(w)×\(h)")
         } catch {
             fail("Screen capture failed: \(error.localizedDescription)")
         }
@@ -273,11 +342,12 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        guard stream === self.stream else { return }   // an old stream from before a resolution switch
         fail("Screen capture stopped: \(error.localizedDescription)")
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sb: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard !stopped, type == .screen, sb.isValid else { return }
+        guard !stopped, type == .screen, sb.isValid, stream === self.stream else { return }
         guard let arr = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let raw = arr.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
               let pb = CMSampleBufferGetImageBuffer(sb) else { return }
@@ -377,11 +447,13 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
         needKey = false
         inFlight += 1
         let t0 = DispatchTime.now().uptimeNanoseconds
+        let gen = generation
         let st = VTCompressionSessionEncodeFrame(sess, imageBuffer: pb, presentationTimeStamp: pts, duration: .invalid,
                                                  frameProperties: props, infoFlagsOut: nil) { [weak self] status, _, out in
             guard let self = self else { return }
             let t1 = DispatchTime.now().uptimeNanoseconds
             self.q.async {
+                guard gen == self.generation else { return }   // from an encoder replaced by a resolution switch
                 self.encMs += Double(t1 - t0) / 1e6; self.encN += 1
                 if status == noErr, let out = out, self.handleEncoded(out) { return }
                 if key { self.needKey = true }   // a frame that never went out can't be acked

@@ -26,7 +26,7 @@ enum SendCLI {
         let s = Sender(cfg)
         var vd: VirtualDisplay?
         if cfg.displayID == nil {
-            s.prepareDisplay = {
+            s.prepareDisplay = { _ in
                 await MainActor.run { vd = VirtualDisplay() }
                 guard let v = vd, await v.waitUntilReady() else { return nil }
                 return v.displayID
