@@ -10,7 +10,9 @@ so we stream the video ourselves.
 ## Hardware / software
 - Sender: MacBook Air M5, base config, macOS Tahoe. Must use negligible CPU/GPU/RAM
   (hardware HEVC encode only; ScreenCaptureKit delivers frames only on change).
-- Receiver: 2020 Intel i5 27" iMac 5K, base config, macOS Monterey (12) (Radeon Pro, Intel UHD 630, T2, Wi-Fi 5).
+- Receiver: 2020 27" iMac 5K, base config (confirmed by the user): Intel Core i5 (10th gen, 6-core; Intel UHD 630),
+  AMD Radeon Pro 5300, 8 GB RAM, T2, Wi-Fi 5, macOS Monterey (12). Neither UHD 630 (Gen9.5 Quick Sync) nor the
+  Radeon's VCN 2.0 decodes HEVC 4:4:4 in hardware (both are 4:2:0 only), so 4:4:4 there means CPU decoding.
   Resources are NOT a concern here. Hardware HEVC decode available.
 - Source display: FiveK's own virtual display via private CGVirtualDisplay (src/VirtualDisplay.swift).
   BetterDisplay is NO LONGER used or needed (removed 2026-11-23 at the user's request).
