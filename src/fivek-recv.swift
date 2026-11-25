@@ -14,6 +14,49 @@ import AVFoundation
 import CoreMedia
 import dnssd
 import IOKit.pwr_mgt
+import VideoToolbox
+
+/// A tiny (128x64) HEVC Main 4:4:4 keyframe, made on an M5 with the hardware encoder. Decoding it tells us
+/// whether this Mac can show a full-colour (4:4:4) stream at all, and whether it does it in hardware.
+enum Probe444 {
+    static let probeParamSets = ["QAEMAf//BAgAAAMAvggAAAMAAB4VwJA=", "QgEBBAgAAAMAvggAAAMAAB6QAoQIOCHxAr3IsqI=", "RAHALLwUyQ=="]
+    static let probeFrame = "AAAAPE4BBTJHVkrcXExDP5TvxRE80UOoAQAAAwABAwAAAwABAgAAhwALAAADAAADAAADALQMA4krAQ3/////gAAAARcoAa8QhH9A6qXW90wlCmoR4iLN6qUanZhN19L13JCi0MnF5aX+rPso//H6dOyzDnmbWwBF3yeT9cy803wDTnNXXrGcXUD45qmxXVUidwmBde7/G1cQ3szCAnTXBxpm1VoCN5zhudVtMD74oB3qxQdf/vhrJGpC6YLNZNYcTJsmmPr7Azocs4T84CbaWWIaXE5Pn6PI4mg64HC5rTSQAX5WrSAOOuWxxNBRYyznRQ52MDiFeJBhmioFuCXka0zq20+s7/Z35x+aEy12XyJxwjXtpfipJEIhnMTqrlMoqvPckluegeXJOdC4/PrPWcJ78rX/Vc2We6EE2xJV3//sTyuV6kyda1aAl3sjnHpvTk7nxKRXXroziuA="
+
+    static func run() -> (ok: Bool, hardware: Bool) {
+        let sets = probeParamSets.compactMap { Data(base64Encoded: $0) }
+        guard let frame = Data(base64Encoded: probeFrame), sets.count == 3 else { return (false, false) }
+        var fmt: CMFormatDescription?
+        let ptrs = sets.map { d -> UnsafePointer<UInt8> in
+            let m = UnsafeMutablePointer<UInt8>.allocate(capacity: d.count); d.copyBytes(to: m, count: d.count); return UnsafePointer(m) }
+        defer { ptrs.forEach { UnsafeMutablePointer(mutating: $0).deallocate() } }
+        guard CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: nil, parameterSetCount: 3, parameterSetPointers: ptrs,
+                parameterSetSizes: sets.map { $0.count }, nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &fmt) == noErr,
+              let f = fmt else { return (false, false) }
+        var dec: VTDecompressionSession?
+        guard VTDecompressionSessionCreate(allocator: nil, formatDescription: f, decoderSpecification: nil, imageBufferAttributes: nil,
+                                           outputCallback: nil, decompressionSessionOut: &dec) == noErr, let d = dec else { return (false, false) }
+        defer { VTDecompressionSessionInvalidate(d) }
+        var hw: CFBoolean?
+        _ = withUnsafeMutablePointer(to: &hw) {
+            VTSessionCopyProperty(d, key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder, allocator: nil, valueOut: $0)
+        }
+        var bb: CMBlockBuffer?
+        guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: frame.count, blockAllocator: nil,
+                customBlockSource: nil, offsetToData: 0, dataLength: frame.count, flags: kCMBlockBufferAssureMemoryNowFlag,
+                blockBufferOut: &bb) == noErr, let block = bb else { return (false, false) }
+        _ = frame.withUnsafeBytes { CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: frame.count) }
+        var sb: CMSampleBuffer?; var size = frame.count
+        guard CMSampleBufferCreateReady(allocator: nil, dataBuffer: block, formatDescription: f, sampleCount: 1, sampleTimingEntryCount: 0,
+                                        sampleTimingArray: nil, sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sb) == noErr,
+              let sample = sb else { return (false, false) }
+        var ok = false
+        let st = VTDecompressionSessionDecodeFrame(d, sampleBuffer: sample, flags: [], infoFlagsOut: nil) { status, _, img, _, _ in
+            ok = status == noErr && img != nil
+        }
+        VTDecompressionSessionWaitForAsynchronousFrames(d)
+        return (st == noErr && ok, hw.map { CFBooleanGetValue($0) } ?? false)
+    }
+}
 
 final class KeyWindow: NSWindow { override var canBecomeKey: Bool { true } }
 /// Works on the first click even when the receiver isn't the active app.
@@ -25,6 +68,9 @@ final class Receiver: NSObject, NSApplicationDelegate {
     let cursorLayer = CALayer()   // the Air's cursor, drawn here so it moves at network speed (type 3/4)
     var cursorSize = CGSize(width: 17, height: 23)
     var senderPointsW: CGFloat = 0   // the sender display's width in points (type 5); scales the cursor
+    var udpFD: Int32 = -1             // cursor positions over UDP (port 5959), if we could bind it
+    var lastUDPCursor = Date.distantPast
+    var probe: (ok: Bool, hardware: Bool)?
     var launchdMode = false
     var listenSources: [DispatchSourceRead] = []
     var bonjour: DNSServiceRef?
@@ -57,6 +103,7 @@ final class Receiver: NSObject, NSApplicationDelegate {
             src.resume()
             listenSources.append(src)
         }
+        startUDP()
         if launchdMode { showWindow() }   // a connection is already waiting
     }
 
@@ -248,6 +295,10 @@ final class Receiver: NSObject, NSApplicationDelegate {
             var msg: [UInt8] = [0x52] + u16(pw) + u16(ph) + u16(Int(CGFloat(pw) * sf)) + u16(Int(CGFloat(ph) * sf))
             _ = write(c, &msg, msg.count)
         }
+        // Capabilities: 'C' + flags (1 = 4:4:4 decodes, 2 = in hardware, 4 = cursor over UDP).
+        if probe == nil { probe = Probe444.run(); print("4:4:4 decode: \(probe!.ok)\(probe!.hardware ? " (hardware)" : "")") }
+        var caps: [UInt8] = [0x43, (probe!.ok ? 1 : 0) | (probe!.hardware ? 2 : 0) | (udpFD >= 0 ? 4 : 0)]
+        _ = write(c, &caps, caps.count)
         let t = Thread { [weak self] in
             self?.serve(c)
             close(c)
@@ -286,9 +337,11 @@ final class Receiver: NSObject, NSApplicationDelegate {
 
             if type == 5, p.count >= 8 {
                 let ptW = CGFloat(Int(p[0]) << 8 | Int(p[1]))
+                stream444 = p.count >= 9 && p[8] & 1 != 0
+                notReadyStreak = 0; sentFallback = false
                 print("Sender display: \(Int(ptW))x\(Int(p[2]) << 8 | Int(p[3])) pt, \(Int(p[4]) << 8 | Int(p[5]))x\(Int(p[6]) << 8 | Int(p[7])) px")
                 DispatchQueue.main.async { self.senderPointsW = ptW; self.applyCursorSize() }
-            } else if type == 3, p.count >= 5 {
+            } else if type == 3, p.count >= 5, lastUDPCursor.timeIntervalSinceNow < -1 {   // TCP only if UDP is quiet
                 let x = CGFloat(Int(p[0]) << 8 | Int(p[1])) / 65535, y = CGFloat(Int(p[2]) << 8 | Int(p[3])) / 65535
                 let visible = p[4] != 0
                 DispatchQueue.main.async { self.moveCursor(x, y, visible) }
@@ -319,11 +372,20 @@ final class Receiver: NSObject, NSApplicationDelegate {
                 if waitingForKey { if isKey { waitingForKey = false } else { continue } }
                 if !enqueue(p, isKey: isKey, fmt: f) {
                     // P-frames can't decode after a flush: wait for a keyframe and ask the sender for one.
-                    print("decoder reset, requesting keyframe")
+                    // If this was a 4:4:4 stream, ask for 4:2:0 instead.
+                    print("decoder reset, requesting keyframe\(stream444 ? " and 4:2:0" : "")")
                     waitingForKey = true
-                    var k: UInt8 = 0x4B
-                    _ = write(fd, &k, 1)
+                    var k: [UInt8] = stream444 && !sentFallback ? [0x46, 0x4B] : [0x4B]
+                    if stream444 { sentFallback = true }
+                    _ = write(fd, &k, k.count)
                     continue
+                }
+                // Decoder falling behind (e.g. 4:4:4 in software on an older Mac): ask for 4:2:0.
+                if stream444 && notReadyStreak > 30 && !sentFallback {
+                    print("decoder can't keep up with 4:4:4, asking for 4:2:0")
+                    sentFallback = true
+                    var fb: UInt8 = 0x46
+                    _ = write(fd, &fb, 1)
                 }
                 frames += 1; bytes += p.count
             }
@@ -400,6 +462,8 @@ final class Receiver: NSObject, NSApplicationDelegate {
     }
 
     /// Returns false if the decoder needed a reset (frame not shown; a keyframe is required).
+    var stream444 = false, sentFallback = false, notReadyStreak = 0   // reader thread only
+
     func enqueue(_ p: [UInt8], isKey: Bool, fmt: CMVideoFormatDescription) -> Bool {
         let n = p.count - 1
         var bb: CMBlockBuffer?
@@ -436,12 +500,53 @@ final class Receiver: NSObject, NSApplicationDelegate {
         if #available(macOS 15.0, *) {
             let r = layer.sampleBufferRenderer
             if r.status == .failed || r.requiresFlushToResumeDecoding { r.flush(); return false }
+            notReadyStreak = r.isReadyForMoreMediaData ? 0 : notReadyStreak + 1
             r.enqueue(sample)
         } else {
             if layer.status == .failed || layer.requiresFlushToResumeDecoding { layer.flush(); return false }
+            notReadyStreak = layer.isReadyForMoreMediaData ? 0 : notReadyStreak + 1
             layer.enqueue(sample)
         }
         return true
+    }
+
+    // MARK: cursor over UDP
+    /// Port 5959/UDP, separate from the TCP video stream, so a cursor update never waits behind a big frame.
+    /// Datagram: ['F' '5'][seq u32][x u16][y u16][visible u8]; older or out-of-order ones are dropped.
+    func startUDP() {
+        let fd = socket(AF_INET6, SOCK_DGRAM, 0)
+        guard fd >= 0 else { return }
+        var off: Int32 = 0, on: Int32 = 1
+        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, 4)
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, 4)
+        var vi = Int32(NET_SERVICE_TYPE_VO)   // voice class: smallest queueing delay on Wi-Fi
+        setsockopt(fd, SOL_SOCKET, SO_NET_SERVICE_TYPE, &vi, 4)
+        var a = sockaddr_in6()
+        a.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size); a.sin6_family = sa_family_t(AF_INET6)
+        a.sin6_port = UInt16(5959).bigEndian; a.sin6_addr = in6addr_any
+        let ok = withUnsafePointer(to: &a) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) }
+        }
+        guard ok == 0 else { close(fd); print("UDP 5959 unavailable; cursor goes over TCP"); return }
+        udpFD = fd
+        let t = Thread { [weak self] in
+            var buf = [UInt8](repeating: 0, count: 64)
+            var lastSeq: UInt32 = 0
+            while true {
+                let n = recv(fd, &buf, buf.count, 0)
+                guard n >= 11, buf[0] == 0x46, buf[1] == 0x35 else { if n < 0 && errno != EINTR { return }; continue }
+                let seq = UInt32(buf[2]) << 24 | UInt32(buf[3]) << 16 | UInt32(buf[4]) << 8 | UInt32(buf[5])
+                // Drop reordered datagrams (a new sender session starts again from 1).
+                if seq <= lastSeq && lastSeq - seq < 1_000_000 { continue }
+                lastSeq = seq
+                let x = CGFloat(Int(buf[6]) << 8 | Int(buf[7])) / 65535, y = CGFloat(Int(buf[8]) << 8 | Int(buf[9])) / 65535
+                let visible = buf[10] != 0
+                DispatchQueue.main.async { self?.lastUDPCursor = Date(); self?.moveCursor(x, y, visible) }
+            }
+        }
+        t.qualityOfService = .userInteractive
+        t.name = "fivek.cursor"
+        t.start()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }

@@ -23,22 +23,42 @@ struct DisplayChoice {
     var pixelW: Int { hiDPI ? pointsW * 2 : pointsW }
     var pixelH: Int { hiDPI ? pointsH * 2 : pointsH }
 
-    static let auto = "auto"
+    static let auto = "auto", custom = "custom"
     static let defaultID = "5k"
-    static let presets: [DisplayChoice] = [
-        DisplayChoice(id: "5k",   title: "5K · looks like 2560×1440 (5120×2880)",        pointsW: 2560, pointsH: 1440, hiDPI: true),
-        DisplayChoice(id: "4096", title: "Larger text · looks like 2048×1152 (4096×2304)", pointsW: 2048, pointsH: 1152, hiDPI: true),
-        DisplayChoice(id: "4k",   title: "4K · looks like 1920×1080 (3840×2160)",        pointsW: 1920, pointsH: 1080, hiDPI: true),
-        DisplayChoice(id: "1440", title: "1440p · 2560×1440, faster, less sharp",        pointsW: 2560, pointsH: 1440, hiDPI: false),
-        DisplayChoice(id: "1080", title: "1080p · 1920×1080, fastest",                    pointsW: 1920, pointsH: 1080, hiDPI: false),
+    static func hi(_ id: String, _ label: String, _ w: Int, _ h: Int) -> DisplayChoice {
+        DisplayChoice(id: id, title: "\(label)looks like \(w)×\(h) (\(w * 2)×\(h * 2))", pointsW: w, pointsH: h, hiDPI: true)
+    }
+    /// HiDPI (Retina) sizes, largest workspace first. Above 2560×1440 the iMac scales the picture down.
+    static let hiDPIPresets: [DisplayChoice] = [
+        hi("3200", "Most space · ", 3200, 1800),
+        hi("2880", "More space · ", 2880, 1620),
+        hi("5k",   "5K · ", 2560, 1440),
+        hi("2304", "", 2304, 1296),
+        hi("4096", "Larger text · ", 2048, 1152),
+        hi("4k",   "4K · ", 1920, 1080),
+        hi("1600", "", 1600, 900),
+        hi("1280", "Largest text · ", 1280, 720),
     ]
+    /// Low-DPI sizes: far fewer pixels, so faster, but visibly softer on a 5K panel.
+    static let standardPresets: [DisplayChoice] = [
+        DisplayChoice(id: "1440", title: "2560×1440 (low DPI, faster)", pointsW: 2560, pointsH: 1440, hiDPI: false),
+        DisplayChoice(id: "1080", title: "1920×1080 (low DPI, fastest)", pointsW: 1920, pointsH: 1080, hiDPI: false),
+    ]
+    static var presets: [DisplayChoice] { hiDPIPresets + standardPresets }
+
+    static func customChoice(_ d: UserDefaults = .standard) -> DisplayChoice {
+        let w = d.integer(forKey: "CustomWidth"), h = d.integer(forKey: "CustomHeight")
+        let hd = d.object(forKey: "CustomHiDPI") as? Bool ?? true
+        return DisplayChoice(id: custom, title: "Custom", pointsW: w > 0 ? w : 2560, pointsH: h > 0 ? h : 1440, hiDPI: hd)
+    }
 
     /// Resolves a stored mode id to a size. Auto follows the receiver's screen (5K until it reports one).
     static func resolve(_ id: String, receiver: ReceiverScreen?) -> DisplayChoice {
         if id == auto, let r = receiver {
             return DisplayChoice(id: auto, title: "Auto", pointsW: r.pointsW, pointsH: r.pointsH, hiDPI: r.hiDPI)
         }
-        return presets.first { $0.id == id } ?? presets[0]
+        if id == custom { return customChoice() }
+        return presets.first { $0.id == id } ?? hiDPIPresets.first { $0.id == defaultID }!
     }
 }
 
@@ -60,6 +80,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var streaming = false                 // capture has started at least once (menu changes apply live)
     var receiverScreen: ReceiverScreen?
     let resolutionMenu = NSMenu()
+    let sharpnessMenu = NSMenu()
+    var using444: Bool?
+    var chromaNote: String?
+    var currentStream: (w: Int, h: Int)?
+
+    var chromaID: String {
+        get { d.string(forKey: "Chroma") ?? ChromaMode.auto.rawValue }
+        set { d.set(newValue, forKey: "Chroma") }
+    }
 
     var modeID: String {
         get { d.string(forKey: "DisplayMode") ?? DisplayChoice.defaultID }
@@ -76,34 +105,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let res = NSMenuItem(title: "Display Resolution", action: nil, keyEquivalent: "")
         res.submenu = resolutionMenu
         menu.addItem(res)
+        let sharp = NSMenuItem(title: "Text Sharpness", action: nil, keyEquivalent: "")
+        sharp.submenu = sharpnessMenu
+        menu.addItem(sharp)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Stop", action: #selector(stopClicked), keyEquivalent: "q"))
         item.menu = menu
         rebuildResolutionMenu()
+        rebuildSharpnessMenu()
         Task { await run() }
     }
 
     func rebuildResolutionMenu() {
         resolutionMenu.removeAllItems()
-        let autoTitle = receiverScreen.map { "Auto · match the iMac (\($0.pointsW)×\($0.pointsH)\($0.hiDPI ? " HiDPI" : ""))" }
-            ?? "Auto · match the iMac's screen"
-        let autoItem = NSMenuItem(title: autoTitle, action: #selector(pickResolution(_:)), keyEquivalent: "")
-        autoItem.representedObject = DisplayChoice.auto
-        autoItem.target = self
-        autoItem.state = modeID == DisplayChoice.auto ? .on : .off
-        resolutionMenu.addItem(autoItem)
-        resolutionMenu.addItem(.separator())
-        for c in DisplayChoice.presets {
-            let it = NSMenuItem(title: c.title, action: #selector(pickResolution(_:)), keyEquivalent: "")
-            it.representedObject = c.id
+        func add(_ title: String, _ id: String) {
+            let it = NSMenuItem(title: title, action: #selector(pickResolution(_:)), keyEquivalent: "")
+            it.representedObject = id
             it.target = self
-            it.state = modeID == c.id ? .on : .off
+            it.state = modeID == id ? .on : .off
             resolutionMenu.addItem(it)
+        }
+        func header(_ t: String) { let h = NSMenuItem(title: t, action: nil, keyEquivalent: ""); h.isEnabled = false; resolutionMenu.addItem(h) }
+
+        // The sharpest picture is when the stream's pixels match the iMac's exactly (no resampling there).
+        if let r = receiverScreen, let cur = currentStream, (cur.w != r.pixelW || cur.h != r.pixelH) {
+            header("⚠︎ The iMac's screen is \(r.pixelW)×\(r.pixelH) px; this stream is \(cur.w)×\(cur.h)")
+            header("   so it's resampled. Auto matches it exactly.")
+            resolutionMenu.addItem(.separator())
+        }
+        add(receiverScreen.map { "Auto · match the iMac (\($0.pointsW)×\($0.pointsH)\($0.hiDPI ? " HiDPI" : ""))" }
+            ?? "Auto · match the iMac's screen", DisplayChoice.auto)
+        resolutionMenu.addItem(.separator())
+        header("HiDPI (sharp)")
+        for c in DisplayChoice.hiDPIPresets { add(c.title, c.id) }
+        resolutionMenu.addItem(.separator())
+        header("Low DPI")
+        for c in DisplayChoice.standardPresets { add(c.title, c.id) }
+        resolutionMenu.addItem(.separator())
+        let cc = DisplayChoice.customChoice(d)
+        let customItem = NSMenuItem(title: modeID == DisplayChoice.custom
+                                        ? "Custom: \(cc.pointsW)×\(cc.pointsH)\(cc.hiDPI ? " HiDPI" : "")…" : "Custom…",
+                                    action: #selector(pickCustom), keyEquivalent: "")
+        customItem.target = self
+        customItem.state = modeID == DisplayChoice.custom ? .on : .off
+        resolutionMenu.addItem(customItem)
+    }
+
+    func rebuildSharpnessMenu() {
+        sharpnessMenu.removeAllItems()
+        func add(_ title: String, _ id: String) {
+            let it = NSMenuItem(title: title, action: #selector(pickChroma(_:)), keyEquivalent: "")
+            it.representedObject = id
+            it.target = self
+            it.state = chromaID == id ? .on : .off
+            sharpnessMenu.addItem(it)
+        }
+        add("Auto · full colour if the iMac can decode it", ChromaMode.auto.rawValue)
+        add("Full colour (4:4:4) · sharpest text", ChromaMode.full444.rawValue)
+        add("Standard (4:2:0) · lightest for the iMac", ChromaMode.standard420.rawValue)
+        if let u = using444 {
+            sharpnessMenu.addItem(.separator())
+            let now = NSMenuItem(title: "Now: \(u ? "full colour 4:4:4" : "standard 4:2:0")\(chromaNote.map { " (\($0))" } ?? "")",
+                                 action: nil, keyEquivalent: "")
+            now.isEnabled = false
+            sharpnessMenu.addItem(now)
         }
     }
 
+    @objc func pickChroma(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let m = ChromaMode(rawValue: id) else { return }
+        chromaID = id
+        chromaNote = nil
+        rebuildSharpnessMenu()
+        self.sender?.setChroma(m)
+    }
+
+    @objc func pickCustom() {
+        let cc = DisplayChoice.customChoice(d)
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = "Custom display size"
+        a.informativeText = "The size the iMac's screen will look like, in points. With HiDPI on, FiveK draws it with twice as many pixels each way (like the iMac's own 5K screen). Width 640–4096, height 360–2304."
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 58))
+        let wf = NSTextField(frame: NSRect(x: 0, y: 30, width: 110, height: 24)); wf.stringValue = "\(cc.pointsW)"
+        let x = NSTextField(labelWithString: "×"); x.frame = NSRect(x: 118, y: 33, width: 20, height: 20)
+        let hf = NSTextField(frame: NSRect(x: 140, y: 30, width: 110, height: 24)); hf.stringValue = "\(cc.pointsH)"
+        let hd = NSButton(checkboxWithTitle: "HiDPI (Retina)", target: nil, action: nil); hd.frame = NSRect(x: 0, y: 0, width: 200, height: 22)
+        hd.state = cc.hiDPI ? .on : .off
+        [wf, x, hf, hd].forEach { v.addSubview($0) }
+        a.accessoryView = v
+        a.addButton(withTitle: "Use This Size"); a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = wf
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        // Even sizes only (video needs them), within what the virtual display and HEVC encoder handle.
+        let w = min(4096, max(640, (Int(wf.stringValue.trimmingCharacters(in: .whitespaces)) ?? cc.pointsW) / 2 * 2))
+        let h = min(2304, max(360, (Int(hf.stringValue.trimmingCharacters(in: .whitespaces)) ?? cc.pointsH) / 2 * 2))
+        d.set(w, forKey: "CustomWidth"); d.set(h, forKey: "CustomHeight"); d.set(hd.state == .on, forKey: "CustomHiDPI")
+        let item = NSMenuItem(); item.representedObject = DisplayChoice.custom
+        modeID = ""   // force a re-apply even if Custom was already selected
+        pickResolution(item)
+    }
+
     @objc func pickResolution(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String, id != modeID else { return }
+        guard let id = sender.representedObject as? String, id != modeID || id == DisplayChoice.custom else { return }
         modeID = id
         rebuildResolutionMenu()
         let c = DisplayChoice.resolve(id, receiver: receiverScreen)
@@ -146,6 +250,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if d.integer(forKey: "Mbps") > 0 { cfg.mbps = d.integer(forKey: "Mbps") }
             if d.integer(forKey: "FPS") > 0 { cfg.fps = d.integer(forKey: "FPS") }
             cfg.lowLatencyRC = d.bool(forKey: "LowLatencyRC")
+            cfg.chroma = ChromaMode(rawValue: chromaID) ?? .auto
+            if d.object(forKey: "MaxQP") != nil { cfg.maxQP = d.integer(forKey: "MaxQP") }
             let s = Sender(cfg)
             s.prepareDisplay = { [weak self] rs in
                 guard let self = self else { return nil }
@@ -155,6 +261,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return r
             }
             s.onReceiverScreen = { [weak self] rs in self?.receiverScreen = rs; self?.rebuildResolutionMenu() }
+            s.onChromaChange = { [weak self] full, note in
+                self?.using444 = full; self?.chromaNote = note; self?.rebuildSharpnessMenu()
+            }
+            s.onStreamSize = { [weak self] w, h in self?.currentStream = (w, h); self?.rebuildResolutionMenu() }
             s.onStatus = { [weak self] in self?.setStatus($0) }
             s.onStop = { [weak self] err in self?.finish(err) }
             sender = s
@@ -174,7 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             virtualDisplay = nil   // too small for the new size (or none yet): make a new one
             // Room for every preset, so later switches happen in place.
             guard let v = VirtualDisplay(pointsW: c.pointsW, pointsH: c.pointsH, hiDPI: c.hiDPI,
-                                         maxPixelW: max(5120, c.pixelW), maxPixelH: max(2880, c.pixelH)) else {
+                                         maxPixelW: max(6400, c.pixelW), maxPixelH: max(3600, c.pixelH)) else {
                 print("CGVirtualDisplay creation failed"); return nil
             }
             virtualDisplay = v

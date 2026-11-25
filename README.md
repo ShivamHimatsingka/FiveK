@@ -73,6 +73,7 @@ FiveK display in **System Settings > Displays > Arrange** while streaming. macOS
 | **Stop from the MacBook** | Click FiveK again, or use the menu bar icon > **Stop** |
 | **Stop from the iMac** | Press **Esc** or **⌘Q**. Or move the iMac's mouse and click **Disconnect** |
 | **Change the resolution** | Menu bar icon > **Display Resolution** (applies instantly, while streaming) |
+| **Change text sharpness** | Menu bar icon > **Text Sharpness** (full colour 4:4:4 or standard 4:2:0) |
 | **See live stats** | Click the menu bar icon (fps, Mbps, encode and network times) |
 
 ### Display resolution
@@ -81,17 +82,39 @@ The default is **5K**: the iMac looks like 2560×1440, drawn with 5120×2880 pix
 You can switch at any time from the menu bar, even mid-stream. The virtual display is resized in place, so your
 windows stay where they are.
 
-| Option | Looks like | Pixels streamed | When to use it |
+| Option | Looks like | Pixels streamed | Notes |
 |---|---|---|---|
-| **Auto** | the iMac's own setting | the iMac's native pixels | Match whatever screen the receiver has |
-| **5K** (default) | 2560×1440 | 5120×2880 | Sharpest; what a 5K iMac shows natively |
-| **Larger text** | 2048×1152 | 4096×2304 | Bigger UI, still HiDPI |
-| **4K** | 1920×1080 | 3840×2160 | Big UI; encodes faster, so it's smoother |
-| **1440p** | 2560×1440 | 2560×1440 | Low-DPI; much faster, visibly softer |
-| **1080p** | 1920×1080 | 1920×1080 | Fastest; for slow Wi-Fi |
+| **Auto** | the iMac's own setting | the iMac's native pixels | Pixel-for-pixel match: the sharpest result |
+| Most space | 3200×1800 | 6400×3600 | More room than the iMac's native size; scaled down on the iMac |
+| More space | 2880×1620 | 5760×3240 | Like the iMac's own "More Space" setting |
+| **5K** (default) | 2560×1440 | 5120×2880 | What a 5K iMac shows natively |
+| | 2304×1296 | 4608×2592 | |
+| Larger text | 2048×1152 | 4096×2304 | Bigger UI, still HiDPI |
+| 4K | 1920×1080 | 3840×2160 | Big UI; encodes faster, so it's smoother |
+| | 1600×900 | 3200×1800 | |
+| Largest text | 1280×720 | 2560×1440 | |
+| Low DPI | 2560×1440 or 1920×1080 | same | Much faster, visibly softer |
+| **Custom…** | any size you type | ×2 with HiDPI on | Width 640–4096, height 360–2304 |
 
-Smaller sizes are scaled up to fill the iMac's screen. **Auto** needs FiveK Receiver 0.2 or later on the iMac (it
-reports its screen when the MacBook connects). With an older receiver, Auto falls back to 5K.
+Sizes other than the iMac's own are resampled to fill its screen, so for the very sharpest picture use **Auto**
+(or 5K on a 5K iMac). If the stream and the iMac's screen don't match, the menu says so. **Auto** needs FiveK
+Receiver 0.2 or later on the iMac; with an older receiver it falls back to 5K.
+
+### Text sharpness
+
+Normal video (4:2:0) stores colour at a quarter of the resolution, which softens coloured text and UI edges:
+it's the main reason a stream looks less crisp than the iMac's own screen. FiveK can stream **full colour
+(4:4:4)** instead. Measured on 5K text with `tools/qualitybench.swift`, standard video tops out around 28–29 dB,
+while full colour reaches about 35 dB at a similar size.
+
+| Option | What it does |
+|---|---|
+| **Auto** (default) | Full colour if the iMac can decode it, otherwise standard. The receiver checks this each time it connects |
+| Full colour (4:4:4) | Sharpest text. The MacBook's encoder handles it easily (≈18 ms vs 15 ms per 5K frame) |
+| Standard (4:2:0) | Lightest for the iMac to decode |
+
+Older Intel iMacs may only be able to decode full colour in software. If the receiver can't keep up, or a
+decode fails, it asks the MacBook to switch to standard on its own, and the menu shows that it fell back.
 
 When a session ends, the FiveK display is removed, so your windows come back to the MacBook.
 
@@ -125,11 +148,12 @@ flowchart LR
 - **Latency can't build up.** The iMac acknowledges every frame, and the MacBook limits how much unacknowledged
   data is in flight (2–5 frames, capped by bytes). When the link is busy, frames are skipped *before* encoding,
   and the newest frame is always sent once there's room. So the picture is never stale.
-- **Responsive cursor.** The pointer isn't part of the video. Its position and shape travel separately and
-  are drawn on the iMac, so the pointer moves without waiting for encoding.
-- **Sharp when still.** Once the screen stops changing, the last frame is re-encoded a few times so the
-  encoder can refine it to full detail.
-- **Light on the laptop.** Zero-copy NV12 capture straight into the hardware encoder; no CPU pixel work.
+- **Responsive cursor.** The pointer isn't part of the video. Its position is sent on every mouse movement,
+  over UDP, so it never waits behind a large video frame; the iMac draws it. The cursor's shape follows along.
+- **Sharp text.** Full-colour 4:4:4 encoding when the iMac supports it, and a quality floor (QP ≤ 24) so no
+  frame is ever encoded too coarsely.
+- **Light on the laptop.** Hardware HEVC encoding, no CPU pixel work, and nothing is encoded while the screen
+  is still.
 
 <details>
 <summary><b>Wire format</b></summary>
@@ -142,10 +166,15 @@ Every message is `[type u8][length u32 big-endian][payload]`.
 | 2 | MacBook → iMac | Frame: `[flags u8, 1 = keyframe]` + 4-byte length-prefixed NAL units |
 | 3 | MacBook → iMac | Cursor position: `[x u16][y u16]` as a fraction of the screen × 65535, `[visible u8]` |
 | 4 | MacBook → iMac | Cursor image: `[hotX][hotY][width][height]` as u16 in 1/100 pt, then PNG |
-| 5 | MacBook → iMac | Display info, sent whenever capture (re)starts: `[pointsW][pointsH][pixelW][pixelH]` as u16 |
+| 5 | MacBook → iMac | Display info, sent whenever capture (re)starts: `[pointsW][pointsH][pixelW][pixelH]` as u16, then `[flags u8]` (1 = 4:4:4) |
 
 Back-channel, iMac → MacBook: `0x01` acknowledges a frame; `0x4B` (`K`) requests a keyframe; `0x52` (`R`) plus
-`[pointsW][pointsH][pixelW][pixelH]` (u16) reports the iMac's screen, sent once when the connection opens.
+`[pointsW][pointsH][pixelW][pixelH]` (u16) reports the iMac's screen and `0x43` (`C`) plus `[flags u8]` its
+capabilities (1 = decodes 4:4:4, 2 = in hardware, 4 = takes the cursor over UDP), both once on connect;
+`0x46` (`F`) asks for standard 4:2:0 because full colour isn't working.
+
+Cursor over UDP, MacBook → iMac port 5959: 11-byte datagrams `['F' '5'][seq u32][x u16][y u16][visible u8]`.
+Older or out-of-order datagrams are dropped.
 </details>
 
 ## Building from source
@@ -167,7 +196,9 @@ Copy the receiver to the iMac and open it once, as in Quick start.
 All optional, on the MacBook:
 
 ```bash
-defaults write com.fivek.sender DisplayMode auto                   # same as the menu: auto, 5k, 4096, 4k, 1440, 1080
+defaults write com.fivek.sender DisplayMode auto                   # same as the menu (auto, 5k, 4k, custom, …)
+defaults write com.fivek.sender Chroma 444                         # same as Text Sharpness: auto, 444, 420
+defaults write com.fivek.sender MaxQP -int 24                      # quality floor; lower = sharper, bigger frames
 defaults write com.fivek.sender Mbps -int 100                      # lower if Wi-Fi stutters
 defaults write com.fivek.sender FPS -int 60                        # 30 halves the bandwidth
 defaults write com.fivek.sender Host "192.168.1.20"                # skip Bonjour, connect to this IP
@@ -204,7 +235,8 @@ src/send-cli.swift          debug command-line sender
 src/make-icon.swift         draws the app icon
 build.sh                    builds both apps (+ zips) into build/
 make-signing-cert.sh        creates the local "FiveK Local Signing" certificate
-tools/encbench.swift        HEVC encoder benchmark (5K/4K, each rate-control mode)
+tools/encbench.swift        HEVC encoder speed benchmark (5K/4K, each rate-control mode)
+tools/qualitybench.swift    HEVC picture-quality benchmark on 5K text (4:2:0 vs 4:4:4, quality settings)
 tools/airplay-native.swift  lists or sets display modes with CoreGraphics (diagnostics)
 ```
 

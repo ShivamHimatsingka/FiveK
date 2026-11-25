@@ -19,7 +19,7 @@ final class VirtualDisplay {
     /// `pointsW` x `pointsH` is the "looks like" size; with `hiDPI` the display has twice the pixels each way.
     /// `maxPixelW` x `maxPixelH` is the largest size `reconfigure` can switch to without recreating the display.
     init?(name: String = "FiveK", pointsW: Int = 2560, pointsH: Int = 1440, hiDPI: Bool = true,
-          maxPixelW: Int = 5120, maxPixelH: Int = 2880) {
+          maxPixelW: Int = 6400, maxPixelH: Int = 3600) {
         self.pointsW = pointsW; self.pointsH = pointsH; self.hiDPI = hiDPI
         let pw = hiDPI ? pointsW * 2 : pointsW, ph = hiDPI ? pointsH * 2 : pointsH
         self.maxPixelW = max(pw, maxPixelW); self.maxPixelH = max(ph, maxPixelH)
