@@ -205,7 +205,21 @@ final class Receiver: NSObject, NSApplicationDelegate {
     }
 
     func makeControls(in bounds: NSRect) -> NSView {
-        let w: CGFloat = 420, h: CGFloat = 56
+        // Size everything from its content (fonts differ between macOS versions), then lay out the bar.
+        let label = NSTextField(labelWithString: "Showing your MacBook · Esc to disconnect")
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.sizeToFit()
+        let b = FirstClickButton(title: "Disconnect", target: self, action: #selector(endSession))
+        b.bezelStyle = .rounded
+        b.controlSize = .large
+        b.font = .systemFont(ofSize: NSFont.systemFontSize(for: .large))
+        b.sizeToFit()
+        b.frame.size.width += 16   // breathing room inside the bezel
+
+        let pad: CGFloat = 18, gap: CGFloat = 20
+        let h = max(56, b.frame.height + 20)
+        let w = pad + label.frame.width + gap + b.frame.width + pad
         let hud = NSVisualEffectView(frame: NSRect(x: (bounds.width - w) / 2, y: bounds.height - h - 24, width: w, height: h))
         hud.material = .hudWindow
         hud.blendingMode = .withinWindow
@@ -214,15 +228,9 @@ final class Receiver: NSObject, NSApplicationDelegate {
         hud.layer?.cornerRadius = 14
         hud.layer?.zPosition = 20
         hud.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        let label = NSTextField(labelWithString: "Showing your MacBook · Esc to disconnect")
-        label.textColor = .white
-        label.font = .systemFont(ofSize: 14, weight: .medium)
-        label.frame = NSRect(x: 18, y: (h - 20) / 2, width: 280, height: 20)
+        label.frame.origin = NSPoint(x: pad, y: ((h - label.frame.height) / 2).rounded())
+        b.frame.origin = NSPoint(x: w - pad - b.frame.width, y: ((h - b.frame.height) / 2).rounded())
         hud.addSubview(label)
-        let b = FirstClickButton(title: "Disconnect", target: self, action: #selector(endSession))
-        b.bezelStyle = .rounded
-        b.controlSize = .large
-        b.frame = NSRect(x: w - 124, y: (h - 32) / 2, width: 110, height: 32)
         hud.addSubview(b)
         hud.isHidden = true
         controls = hud
