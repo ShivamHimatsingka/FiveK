@@ -19,7 +19,7 @@ final class VirtualDisplay {
     /// `pointsW` x `pointsH` is the "looks like" size; with `hiDPI` the display has twice the pixels each way.
     /// `maxPixelW` x `maxPixelH` is the largest size `reconfigure` can switch to without recreating the display.
     init?(name: String = "FiveK", pointsW: Int = 2560, pointsH: Int = 1440, hiDPI: Bool = true,
-          maxPixelW: Int = 6400, maxPixelH: Int = 3600) {
+          maxPixelW: Int = 6400, maxPixelH: Int = 3600, sizeMM: CGSize? = nil) {
         self.pointsW = pointsW; self.pointsH = pointsH; self.hiDPI = hiDPI
         let pw = hiDPI ? pointsW * 2 : pointsW, ph = hiDPI ? pointsH * 2 : pointsH
         self.maxPixelW = max(pw, maxPixelW); self.maxPixelH = max(ph, maxPixelH)
@@ -29,7 +29,8 @@ final class VirtualDisplay {
         d.name = name
         d.maxPixelsWide = UInt32(self.maxPixelW)
         d.maxPixelsHigh = UInt32(self.maxPixelH)
-        d.sizeInMillimeters = CGSize(width: 597, height: 336)   // a 27" 16:9 panel
+        // The receiver's measured panel size if known; otherwise estimate from the size in points (~110 pt per inch).
+        d.sizeInMillimeters = sizeMM ?? CGSize(width: Double(pointsW) / 110 * 25.4, height: Double(pointsH) / 110 * 25.4)
         d.vendorID = 0xF15C; d.productID = 0x5000; d.serialNum = 1
         // sRGB / BT.709 primaries and D65 white, matching how the stream is tagged.
         d.redPrimary = CGPoint(x: 0.640, y: 0.330)

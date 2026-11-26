@@ -37,11 +37,16 @@ Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
   VirtualDisplay (CGVirtualDisplay, name "FiveK", 2560x1440 pt HiDPI = 5120x2880 px, 27" size, sRGB primaries,
   fixed vendor 0xF15C / product 0x5000 / serial 1 so macOS remembers its arrangement) and capture starts on it.
   Releasing the object (stop/quit/crash) removes the display.
-  Menu bar > Display Resolution (stored as defaults DisplayMode; default "5k"): Auto (match receiver), HiDPI presets
-  3200x1800, 2880x1620, 5k 2560x1440, 2304x1296, 4096=2048x1152, 4k 1920x1080, 1600x900, 1280x720 (all @2x),
-  low-DPI 1440/1080 (@1x), and "custom" (CustomWidth/CustomHeight/CustomHiDPI, dialog clamps 640-4096 x 360-2304,
-  even numbers). Virtual display is created with max 6400x3600 so every preset switches in place. Menu warns when
-  stream pixels != receiver pixels (resampling on the iMac).
+  NOTHING may assume a particular receiver (user requirement 2026-11-26: "must work on 2 random computers"; measure
+  both sides). Menu bar > Extend / Mirror (defaults ScreenMode extend|mirror): Mirror captures the sender's built-in
+  (else main) display at its measured pixels and releases the virtual display; receiver uses resizeAspect
+  (letterbox) and maps the cursor into AVMakeRect(stream aspect, bounds).
+  Menu bar > Display Resolution (defaults DisplayMode; default "auto" = receiver's measured points/HiDPI exactly):
+  presets are RELATIVE steps of the receiver's points: s125 s112 s100 s090 s080 s075 s062 s050 (HiDPI) and l100
+  l075 (1x); base 2560x1440 only until a receiver reports. Legacy ids (5k, 4k, 1440, …) map via
+  DisplayChoice.legacy. "custom" = CustomWidth/CustomHeight/CustomHiDPI (640-4096 x 360-2304, even). Virtual display
+  max pixels = 2.5x receiver points (1.25x HiDPI) so presets switch in place; sizeInMillimeters from receiver 'P'
+  (else points/110 in). Menu warns when stream pixels != receiver pixels.
   Menu bar > Text Sharpness (defaults Chroma: auto|444|420): 4:4:4 captures BGRA and encodes HEVC_Main444_AutoLevel
   (string constant; not exported by name); 4:2:0 captures NV12. Auto = 4:4:4 iff receiver's 'C' flag says it can
   decode it; receiver sends 'F' on decode failure or >30 frames with the layer not ready -> sender forces 4:2:0. Changing it while
@@ -74,7 +79,8 @@ Repo: github.com/ShivamHimatsingka/FiveK (MIT). build/ is gitignored.
   type 5 = display info [ptW][ptH][pxW][pxH] u16, sent at every capture (re)start; receiver scales the cursor by
   its own points width / sender points width, and flushes the layer when the stream dimensions change.
   Back-channel (receiver -> sender): 0x01 per type-2 message received (ack), 0x4B ('K') = keyframe request,
-  0x52 ('R') + [ptW][ptH][pxW][pxH] u16 = receiver screen, sent right after accept (Auto mode waits up to 0.8 s).
+  0x52 ('R') + [ptW][ptH][pxW][pxH] u16 = receiver screen, sent right after accept (Auto mode waits up to 0.8 s),
+  then 0x43 ('C') caps and 0x50 ('P') + [mmW][mmH] u16 physical size (CGDisplayScreenSize of the receiver screen).
   Flow control: always 2 unacked frames, up to 5 while unacked bytes < 600 KB. Frames captured while full are
   skipped before encoding, but the newest is held and sent when a slot frees.
   Quality: MaxAllowedFrameQP 24 (defaults MaxQP). The old "refinement" re-encodes were REMOVED 2026-11-25:
@@ -103,7 +109,10 @@ Virtual display verified locally 2026-11-23 with a fake receiver (scratch script
 display created at 2560x1440 pt / 5120x2880 px, captured and encoded (51 fps burst, ~22 ms encode), removed on
 quit. 2026-11-25 local test (fake receiver reporting 5K + caps 5): 4:4:4 negotiated, sizes switched in place
 (5K -> 6400x3600 -> 5K on one display), Text Sharpness 4:4:4 -> 4:2:0 live, Custom 2200x1238 HiDPI -> 4400x2476,
-UDP cursor datagrams received. Resolution menu verified locally 2026-11-23 the same way: Auto with a fake 1920x1080 1x receiver made a
+UDP cursor datagrams received. 2026-11-26 (tools/fakereceiver.py as a 1440x900 HiDPI, 300x190 mm receiver): Auto
+made 1440x900 HiDPI at ~300x187 mm, presets came out 16:10 (1800x1124 ... 720x450), More space resized in place,
+Mirror streamed the Air's measured built-in (3420x2224) and removed the virtual display, Extend restored it.
+Resolution menu verified locally 2026-11-23 the same way: Auto with a fake 1920x1080 1x receiver made a
 1920x1080 display (encode ~6 ms); switching to 5K from the menu resized display 7 in place and restarted the
 stream on the same connection (new type 5 + keyframe). Idle cost: ~5 encodes/s on a still desktop (1 Hz menu bar clock change + up to 3 refinement passes each).
 

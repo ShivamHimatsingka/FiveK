@@ -1,5 +1,6 @@
 // Sender.swift  (MacBook Air side, shared by FiveK.app and the fivek-send debug CLI)
-// Captures the 5120x2880 virtual display, hardware-encodes HEVC, streams over TCP to fivek-recv.
+// Captures a display (FiveK's virtual display, or the Mac's own screen when mirroring) at its measured pixel size,
+// hardware-encodes HEVC, streams over TCP to fivek-recv.
 //
 // Wire format, sender -> receiver: [type u8][len u32 BE][payload]
 //   type 1 = parameter sets ([count u8] then [len u16 BE][bytes] each), sent before every keyframe
@@ -12,6 +13,7 @@
 //   0x52 ('R') + [pointsW u16][pointsH u16][pixelW u16][pixelH u16] = the receiver's screen, sent on connect,
 //   0x43 ('C') + [flags u8] = capabilities, sent on connect: 1 = can decode HEVC 4:4:4, 2 = ...in hardware,
 //                             4 = accepts cursor positions over UDP (port 5959),
+//   0x50 ('P') + [mmW u16][mmH u16] = the receiver screen's physical size, sent on connect after 'C',
 //   0x46 ('F') = 4:4:4 isn't working here (decode failed or can't keep up): fall back to 4:2:0.
 // Cursor over UDP (when the receiver accepts it): 11-byte datagrams to the receiver's port 5959:
 //   ['F' '5'][seq u32][x u16][y u16][visible u8]. UDP never queues behind a big video frame the way TCP does.
@@ -34,6 +36,7 @@ enum ChromaMode: String { case auto, full444 = "444", standard420 = "420" }
 /// The receiver's screen, as it reports it on connect (used by Auto resolution).
 struct ReceiverScreen: Equatable {
     var pointsW: Int, pointsH: Int, pixelW: Int, pixelH: Int
+    var mmW = 0, mmH = 0                     // physical size, if the receiver reported it ('P')
     var hiDPI: Bool { pixelW >= pointsW * 2 }
     var description: String { "\(pointsW)×\(pointsH)\(hiDPI ? " HiDPI" : "") (\(pixelW)×\(pixelH) px)" }
 }
@@ -43,7 +46,7 @@ struct SenderConfig {
     var port: UInt16 = 5959
     var mbps = 100
     var fps = 60
-    var displayID: CGDirectDisplayID? = nil   // nil = first display that is 5120 pixels wide
+    var displayID: CGDirectDisplayID? = nil   // nil = the main display (when nothing else picks one)
     var findTimeout: TimeInterval = 20
     // Measured on an M5 Air at 5120x2880: low-latency rate control ~27 ms/frame and ~20 fps sustained,
     // normal rate control ~15 ms/frame and ~48 fps. So normal is the default.
@@ -58,7 +61,7 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
     var onStop: ((_ error: String?) -> Void)?   // nil = normal stop
     /// Called once connected, before capture starts: creates the display to stream and returns its ID
     /// (nil = failed). Gets the receiver's screen if it reported one within `screenWait`.
-    /// Without it, `cfg.displayID` or the first 5120-pixel-wide display is used.
+    /// Without it, `cfg.displayID` or the main display is used.
     var prepareDisplay: ((ReceiverScreen?) async -> CGDirectDisplayID?)?
     var targetDisplay: CGDirectDisplayID?
     var onReceiverScreen: ((ReceiverScreen) -> Void)?   // main queue
@@ -102,7 +105,7 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
     var held: (pb: CVPixelBuffer, pts: CMTime)? = nil   // newest frame skipped while the pipe was full
     var needKey = true
     var bytesOut = 0, framesOut = 0, framesSkipped = 0
-    var pixelW = 5120, pixelH = 2880
+    var pixelW = 0, pixelH = 0                          // measured from the captured display
     var activity: NSObjectProtocol?
     var stopped = false
     var connected = false
@@ -123,7 +126,7 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
         q.asyncAfter(deadline: .now() + cfg.findTimeout) {
             if !self.connected && !self.stopped {
                 self.fail(self.cfg.host == nil
-                    ? "Couldn't find the iMac. Is it on, logged in, on the same network, with the receiver installed?"
+                    ? "Couldn't find the other Mac. Is it on, logged in, on the same network, with FiveK Receiver installed?"
                     : "Couldn't connect to \(self.cfg.host!):\(self.cfg.port).")
             }
         }
@@ -163,7 +166,7 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
             status("Connecting to \(h)…")
             open(NWConnection(host: NWEndpoint.Host(h), port: NWEndpoint.Port(rawValue: cfg.port)!, using: params))
         } else {
-            status("Looking for the iMac…")
+            status("Looking for the other Mac…")
             let b = NWBrowser(for: .bonjour(type: "_fivek._tcp", domain: nil), using: params)
             b.browseResultsChangedHandler = { [weak self] results, _ in
                 guard let self = self, self.conn == nil, !self.stopped, let r = results.first else { return }
@@ -214,7 +217,7 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
         c.receive(minimumIncompleteLength: 1, maximumLength: 256) { [weak self] data, _, done, err in
             guard let self = self, !self.stopped else { return }
             if let d = data { self.ackBuf += d; self.parseBackChannel() }
-            if done || err != nil { self.stop("The iMac closed the display.") ; return }
+            if done || err != nil { self.stop("The other Mac closed the display.") ; return }
             self.readAcks(c)
         }
     }
@@ -232,6 +235,14 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
                 print("Receiver screen: \(rs.description)")
                 DispatchQueue.main.async { self.onReceiverScreen?(rs) }
                 i += 9; continue
+            }
+            if b == 0x50 {
+                guard i + 5 <= ackBuf.count else { break }
+                func u16(_ k: Int) -> Int { Int(ackBuf[i + k]) << 8 | Int(ackBuf[i + k + 1]) }
+                receiverScreen?.mmW = u16(1); receiverScreen?.mmH = u16(3)
+                print("Receiver screen size: \(u16(1))×\(u16(3)) mm")
+                if let rs = receiverScreen { DispatchQueue.main.async { self.onReceiverScreen?(rs) } }
+                i += 5; continue
             }
             if b == 0x43 {
                 guard i + 2 <= ackBuf.count else { break }
@@ -320,7 +331,7 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
             for attempt in 0..<20 {
                 for d in content.displays {
                     if let w = want { if d.displayID == w { chosen = d } }
-                    else if let m = CGDisplayCopyDisplayMode(d.displayID), m.pixelWidth == 5120 { chosen = d }
+                    else if d.displayID == CGMainDisplayID() { chosen = d }   // no target given: the main display
                 }
                 if chosen != nil || attempt == 19 { break }
                 try await Task.sleep(nanoseconds: 150_000_000)
@@ -328,10 +339,10 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
             }
             guard let disp = chosen else {
                 let list = content.displays.map { "id=\($0.displayID) \($0.width)x\($0.height)pt" }.joined(separator: ", ")
-                fail("No 5120-pixel-wide display found (\(list)).")
+                fail("The display to stream wasn't found (\(list)).")
                 return
             }
-            var w = 5120, h = 2880
+            var w = Int(CGDisplayPixelsWide(disp.displayID)), h = Int(CGDisplayPixelsHigh(disp.displayID))
             if let m = CGDisplayCopyDisplayMode(disp.displayID) { w = m.pixelWidth; h = m.pixelHeight }
             print("Capturing display \(disp.displayID) at \(w)x\(h)")
 
@@ -368,7 +379,7 @@ final class Sender: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Senda
                 func u16(_ v: Int) -> [UInt8] { [UInt8(v >> 8 & 255), UInt8(v & 255)] }
                 sendMsg(5, Data(u16(ptW) + u16(ptH) + u16(w) + u16(h) + [full ? 1 : 0]))   // receiver sizes the cursor
                 lastCursorPNG = Data()                                                      // resend cursor image
-                let fallback = forced420 ? "The iMac couldn't keep up with 4:4:4" : nil
+                let fallback = forced420 ? "the other Mac couldn't keep up with 4:4:4" : nil
                 DispatchQueue.main.async { self.onChromaChange?(full, fallback); self.onStreamSize?(w, h) }
             }
             cq.async { self.cursorDisplay = disp.displayID; self.lastCursor = nil }

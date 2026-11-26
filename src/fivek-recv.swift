@@ -68,6 +68,7 @@ final class Receiver: NSObject, NSApplicationDelegate {
     let cursorLayer = CALayer()   // the Air's cursor, drawn here so it moves at network speed (type 3/4)
     var cursorSize = CGSize(width: 17, height: 23)
     var senderPointsW: CGFloat = 0   // the sender display's width in points (type 5); scales the cursor
+    var streamPixels = CGSize(width: 16, height: 9)   // the stream's shape (type 5), for letterboxing
     var udpFD: Int32 = -1             // cursor positions over UDP (port 5959), if we could bind it
     var lastUDPCursor = Date.distantPast
     var probe: (ok: Bool, hardware: Bool)?
@@ -128,7 +129,8 @@ final class Receiver: NSObject, NSApplicationDelegate {
             v.wantsLayer = true
             layer.frame = v.bounds
             layer.contentsScale = screen.backingScaleFactor
-            layer.videoGravity = .resize
+            // Keep the picture's shape: a 16:10 MacBook screen (mirror mode) gets black bars instead of being stretched.
+            layer.videoGravity = .resizeAspect
             layer.backgroundColor = NSColor.black.cgColor
             v.layer?.addSublayer(layer)
             cursorLayer.contentsScale = screen.backingScaleFactor
@@ -307,6 +309,16 @@ final class Receiver: NSObject, NSApplicationDelegate {
         if probe == nil { probe = Probe444.run(); print("4:4:4 decode: \(probe!.ok)\(probe!.hardware ? " (hardware)" : "")") }
         var caps: [UInt8] = [0x43, (probe!.ok ? 1 : 0) | (probe!.hardware ? 2 : 0) | (udpFD >= 0 ? 4 : 0)]
         _ = write(c, &caps, caps.count)
+        // Physical size: 'P' + width/height in mm, so the sender's virtual display reports a matching size.
+        if let sc = window?.screen ?? NSScreen.main,
+           let num = sc.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            let mm = CGDisplayScreenSize(CGDirectDisplayID(num.uint32Value))
+            if mm.width > 0, mm.height > 0 {
+                func u16(_ v: Int) -> [UInt8] { [UInt8(v >> 8 & 255), UInt8(v & 255)] }
+                var pm: [UInt8] = [0x50] + u16(Int(mm.width.rounded())) + u16(Int(mm.height.rounded()))
+                _ = write(c, &pm, pm.count)
+            }
+        }
         let t = Thread { [weak self] in
             self?.serve(c)
             close(c)
@@ -348,7 +360,12 @@ final class Receiver: NSObject, NSApplicationDelegate {
                 stream444 = p.count >= 9 && p[8] & 1 != 0
                 notReadyStreak = 0; sentFallback = false
                 print("Sender display: \(Int(ptW))x\(Int(p[2]) << 8 | Int(p[3])) pt, \(Int(p[4]) << 8 | Int(p[5]))x\(Int(p[6]) << 8 | Int(p[7])) px")
-                DispatchQueue.main.async { self.senderPointsW = ptW; self.applyCursorSize() }
+                let px = CGSize(width: Int(p[4]) << 8 | Int(p[5]), height: Int(p[6]) << 8 | Int(p[7]))
+                DispatchQueue.main.async {
+                    self.senderPointsW = ptW
+                    if px.width > 0, px.height > 0 { self.streamPixels = px }
+                    self.applyCursorSize()
+                }
             } else if type == 3, p.count >= 5, lastUDPCursor.timeIntervalSinceNow < -1 {   // TCP only if UDP is quiet
                 let x = CGFloat(Int(p[0]) << 8 | Int(p[1])) / 65535, y = CGFloat(Int(p[2]) << 8 | Int(p[3])) / 65535
                 let visible = p[4] != 0
@@ -406,9 +423,12 @@ final class Receiver: NSObject, NSApplicationDelegate {
 
     // MARK: cursor (main thread)
 
+    /// Where the picture actually sits on screen (aspect-fit, so letterboxed if the shapes differ).
+    var videoRect: CGRect { AVMakeRect(aspectRatio: streamPixels, insideRect: layer.bounds) }
+
     func moveCursor(_ x: CGFloat, _ y: CGFloat, _ visible: Bool) {
-        let b = layer.bounds
-        cursorLayer.position = CGPoint(x: x * b.width, y: (1 - y) * b.height)   // layer origin is bottom-left
+        let r = videoRect
+        cursorLayer.position = CGPoint(x: r.minX + x * r.width, y: r.minY + (1 - y) * r.height)   // origin bottom-left
         cursorLayer.isHidden = !visible
     }
 
@@ -423,7 +443,7 @@ final class Receiver: NSObject, NSApplicationDelegate {
     /// The cursor's size is in the sender display's points; ours may differ (e.g. sender at "looks like"
     /// 1920x1080 shown on a 2560x1440-point iMac), so scale it to look the same size as on the MacBook.
     func applyCursorSize() {
-        let scale = senderPointsW > 0 ? layer.bounds.width / senderPointsW : 1
+        let scale = senderPointsW > 0 ? videoRect.width / senderPointsW : 1
         cursorLayer.bounds = CGRect(origin: .zero, size: CGSize(width: cursorSize.width * scale, height: cursorSize.height * scale))
     }
 

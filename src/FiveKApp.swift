@@ -1,7 +1,8 @@
 // FiveKApp.swift: the one-click launcher (FiveK.app, menu bar only, no Dock icon).
 //
-// Launch it  -> finds the iMac over Bonjour, then creates FiveK's own virtual display (default 2560x1440
-//               HiDPI = 5120x2880 pixels) and streams it. No BetterDisplay needed.
+// Launch it  -> finds the receiving Mac over Bonjour, measures its screen, then creates FiveK's own virtual
+//               display to match it (Auto, the default) and streams it. No BetterDisplay needed.
+// Menu bar > Extend / Mirror -> extend onto a new 5K display (default), or mirror the MacBook's own screen.
 // Menu bar > Display Resolution -> pick a size, or Auto (match the receiver's screen). Applies live: the
 //               virtual display is resized in place and the stream restarts at the new size.
 // Launch it again (click the app icon) or menu bar > Stop -> stops streaming and removes the virtual display,
@@ -18,33 +19,51 @@ import CoreGraphics
 import ScreenCaptureKit
 
 /// A virtual display size. `pointsW` x `pointsH` is the "looks like" size; HiDPI doubles the pixels.
+/// Nothing here assumes a particular receiver: the sizes are computed from the receiver's measured screen
+/// (points, pixels, HiDPI or not), so they keep its shape on any pair of Macs.
 struct DisplayChoice {
     let id: String, title: String, pointsW: Int, pointsH: Int, hiDPI: Bool
     var pixelW: Int { hiDPI ? pointsW * 2 : pointsW }
     var pixelH: Int { hiDPI ? pointsH * 2 : pointsH }
 
     static let auto = "auto", custom = "custom"
-    static let defaultID = "5k"
-    static func hi(_ id: String, _ label: String, _ w: Int, _ h: Int) -> DisplayChoice {
-        DisplayChoice(id: id, title: "\(label)looks like \(w)×\(h) (\(w * 2)×\(h * 2))", pointsW: w, pointsH: h, hiDPI: true)
+    static let defaultID = auto
+
+    /// The receiver's screen in points, or a common 16:9 size until a receiver has reported one.
+    static func base(_ r: ReceiverScreen?) -> (w: Int, h: Int, hiDPI: Bool) {
+        if let r = r, r.pointsW > 0, r.pointsH > 0 { return (r.pointsW, r.pointsH, r.hiDPI) }
+        return (2560, 1440, true)
     }
-    /// HiDPI (Retina) sizes, largest workspace first. Above 2560×1440 the iMac scales the picture down.
-    static let hiDPIPresets: [DisplayChoice] = [
-        hi("3200", "Most space · ", 3200, 1800),
-        hi("2880", "More space · ", 2880, 1620),
-        hi("5k",   "5K · ", 2560, 1440),
-        hi("2304", "", 2304, 1296),
-        hi("4096", "Larger text · ", 2048, 1152),
-        hi("4k",   "4K · ", 1920, 1080),
-        hi("1600", "", 1600, 900),
-        hi("1280", "Largest text · ", 1280, 720),
+    static func even(_ v: Double) -> Int { max(2, Int(v.rounded()) / 2 * 2) }
+
+    /// Steps relative to the receiver's own size: >1 = more space, <1 = larger text.
+    static let hiDPISteps: [(id: String, label: String, f: Double)] = [
+        ("s125", "Most space", 1.25), ("s112", "More space", 1.125), ("s100", "Native", 1.0),
+        ("s090", "", 0.9), ("s080", "Larger text", 0.8), ("s075", "", 0.75),
+        ("s062", "", 0.625), ("s050", "Largest text", 0.5),
     ]
-    /// Low-DPI sizes: far fewer pixels, so faster, but visibly softer on a 5K panel.
-    static let standardPresets: [DisplayChoice] = [
-        DisplayChoice(id: "1440", title: "2560×1440 (low DPI, faster)", pointsW: 2560, pointsH: 1440, hiDPI: false),
-        DisplayChoice(id: "1080", title: "1920×1080 (low DPI, fastest)", pointsW: 1920, pointsH: 1080, hiDPI: false),
-    ]
-    static var presets: [DisplayChoice] { hiDPIPresets + standardPresets }
+    static let lowDPISteps: [(id: String, label: String, f: Double)] = [("l100", "", 1.0), ("l075", "", 0.75)]
+
+    static func hiDPIPresets(_ r: ReceiverScreen?) -> [DisplayChoice] {
+        let b = base(r)
+        return hiDPISteps.map { s in
+            let w = even(Double(b.w) * s.f), h = even(Double(b.h) * s.f)
+            let lead = s.label.isEmpty ? "" : s.label + " · "
+            return DisplayChoice(id: s.id, title: "\(lead)looks like \(w)×\(h) (\(w * 2)×\(h * 2))", pointsW: w, pointsH: h, hiDPI: true)
+        }
+    }
+    static func lowDPIPresets(_ r: ReceiverScreen?) -> [DisplayChoice] {
+        let b = base(r)
+        return lowDPISteps.map { s in
+            let w = even(Double(b.w) * s.f), h = even(Double(b.h) * s.f)
+            return DisplayChoice(id: s.id, title: "\(w)×\(h) (low DPI, \(s.f < 1 ? "fastest" : "faster"))", pointsW: w, pointsH: h, hiDPI: false)
+        }
+    }
+    static func presets(_ r: ReceiverScreen?) -> [DisplayChoice] { hiDPIPresets(r) + lowDPIPresets(r) }
+
+    /// Ids saved by FiveK 0.2–0.3, when the sizes were fixed for a 5K iMac.
+    static let legacy = ["5k": "s100", "3200": "s125", "2880": "s112", "2304": "s090", "4096": "s080",
+                         "4k": "s075", "1600": "s062", "1280": "s050", "1440": "l100", "1080": "l075"]
 
     static func customChoice(_ d: UserDefaults = .standard) -> DisplayChoice {
         let w = d.integer(forKey: "CustomWidth"), h = d.integer(forKey: "CustomHeight")
@@ -52,13 +71,15 @@ struct DisplayChoice {
         return DisplayChoice(id: custom, title: "Custom", pointsW: w > 0 ? w : 2560, pointsH: h > 0 ? h : 1440, hiDPI: hd)
     }
 
-    /// Resolves a stored mode id to a size. Auto follows the receiver's screen (5K until it reports one).
+    /// Resolves a stored mode id to a size. Auto = exactly the receiver's screen (pixel for pixel).
     static func resolve(_ id: String, receiver: ReceiverScreen?) -> DisplayChoice {
-        if id == auto, let r = receiver {
-            return DisplayChoice(id: auto, title: "Auto", pointsW: r.pointsW, pointsH: r.pointsH, hiDPI: r.hiDPI)
-        }
+        let id = legacy[id] ?? id
         if id == custom { return customChoice() }
-        return presets.first { $0.id == id } ?? hiDPIPresets.first { $0.id == defaultID }!
+        if id == auto {
+            let b = base(receiver)
+            return DisplayChoice(id: auto, title: "Auto", pointsW: b.w, pointsH: b.h, hiDPI: b.hiDPI)
+        }
+        return presets(receiver).first { $0.id == id } ?? resolve(auto, receiver: receiver)
     }
 }
 
@@ -90,8 +111,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { d.set(newValue, forKey: "Chroma") }
     }
 
+    /// "extend" (FiveK's own virtual display, a second screen) or "mirror" (the MacBook's own screen).
+    var screenMode: String {
+        get { d.string(forKey: "ScreenMode") ?? "extend" }
+        set { d.set(newValue, forKey: "ScreenMode") }
+    }
+    var mirroring: Bool { screenMode == "mirror" }
+    let extendItem = NSMenuItem(title: "Extend · use the other Mac as a second screen", action: nil, keyEquivalent: "")
+    let mirrorItem = NSMenuItem(title: "Mirror · show this Mac's screen", action: nil, keyEquivalent: "")
+    let resolutionItem = NSMenuItem(title: "Display Resolution", action: nil, keyEquivalent: "")
+
     var modeID: String {
-        get { d.string(forKey: "DisplayMode") ?? DisplayChoice.defaultID }
+        get { let v = d.string(forKey: "DisplayMode") ?? DisplayChoice.defaultID; return DisplayChoice.legacy[v] ?? v }
         set { d.set(newValue, forKey: "DisplayMode") }
     }
 
@@ -99,12 +130,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "FiveK")
         let menu = NSMenu()
+        menu.autoenablesItems = false
         statusLine.isEnabled = false
         menu.addItem(statusLine)
         menu.addItem(.separator())
-        let res = NSMenuItem(title: "Display Resolution", action: nil, keyEquivalent: "")
-        res.submenu = resolutionMenu
-        menu.addItem(res)
+        for (it, mode) in [(extendItem, "extend"), (mirrorItem, "mirror")] {
+            it.action = #selector(pickScreenMode(_:)); it.target = self; it.representedObject = mode
+            menu.addItem(it)
+        }
+        menu.addItem(.separator())
+        resolutionItem.submenu = resolutionMenu
+        menu.addItem(resolutionItem)
         let sharp = NSMenuItem(title: "Text Sharpness", action: nil, keyEquivalent: "")
         sharp.submenu = sharpnessMenu
         menu.addItem(sharp)
@@ -113,7 +149,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.menu = menu
         rebuildResolutionMenu()
         rebuildSharpnessMenu()
+        updateModeItems()
         Task { await run() }
+    }
+
+    func updateModeItems() {
+        extendItem.state = mirroring ? .off : .on
+        mirrorItem.state = mirroring ? .on : .off
+        // Mirroring streams the MacBook's own screen at its own resolution, so sizes don't apply.
+        resolutionItem.isEnabled = !mirroring
+        resolutionItem.title = mirroring ? "Display Resolution (extend only)" : "Display Resolution"
+    }
+
+    @objc func pickScreenMode(_ sender: NSMenuItem) {
+        guard let m = sender.representedObject as? String, m != screenMode else { return }
+        screenMode = m
+        updateModeItems()
+        rebuildResolutionMenu()
+        print("Screen mode: \(m)")
+        if streaming, let s = self.sender {
+            s.reconfigure { [weak self] rs in await self?.prepareTarget(rs) }
+        }
+    }
+
+    /// The display to stream: the MacBook's own screen when mirroring, else FiveK's virtual display.
+    @MainActor
+    func prepareTarget(_ rs: ReceiverScreen?) async -> CGDirectDisplayID? {
+        if mirroring {
+            virtualDisplay = nil   // removes the extended display; its windows move back to the MacBook
+            let id = mirrorSource()
+            let m = CGDisplayCopyDisplayMode(id)
+            print("Mirroring display \(id): \(m?.width ?? 0)x\(m?.height ?? 0) pt, \(m?.pixelWidth ?? 0)x\(m?.pixelHeight ?? 0) px")
+            setStatus("Mirroring the MacBook's screen…")
+            return id
+        }
+        return await makeDisplay(DisplayChoice.resolve(modeID, receiver: rs))
+    }
+
+    /// The MacBook's built-in screen (or the main display, on a Mac without one).
+    func mirrorSource() -> CGDirectDisplayID {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16); var n: UInt32 = 0
+        CGGetOnlineDisplayList(16, &ids, &n)
+        let mine = virtualDisplay?.displayID
+        return ids.prefix(Int(n)).first { CGDisplayIsBuiltin($0) != 0 && $0 != mine } ?? CGMainDisplayID()
     }
 
     func rebuildResolutionMenu() {
@@ -127,20 +205,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         func header(_ t: String) { let h = NSMenuItem(title: t, action: nil, keyEquivalent: ""); h.isEnabled = false; resolutionMenu.addItem(h) }
 
-        // The sharpest picture is when the stream's pixels match the iMac's exactly (no resampling there).
-        if let r = receiverScreen, let cur = currentStream, (cur.w != r.pixelW || cur.h != r.pixelH) {
-            header("⚠︎ The iMac's screen is \(r.pixelW)×\(r.pixelH) px; this stream is \(cur.w)×\(cur.h)")
-            header("   so it's resampled. Auto matches it exactly.")
+        // The sharpest picture is when the stream's pixels match the other Mac's exactly (no resampling there).
+        if !mirroring, let r = receiverScreen, let cur = currentStream, (cur.w != r.pixelW || cur.h != r.pixelH) {
+            header("⚠︎ The other Mac's screen is \(r.pixelW)×\(r.pixelH) px; this stream is \(cur.w)×\(cur.h)")
+            header("   so it's resampled there. Auto matches it exactly.")
             resolutionMenu.addItem(.separator())
         }
-        add(receiverScreen.map { "Auto · match the iMac (\($0.pointsW)×\($0.pointsH)\($0.hiDPI ? " HiDPI" : ""))" }
-            ?? "Auto · match the iMac's screen", DisplayChoice.auto)
+        add(receiverScreen.map { "Auto · match the other Mac exactly (\($0.pointsW)×\($0.pointsH)\($0.hiDPI ? " HiDPI" : ""), \($0.pixelW)×\($0.pixelH) px)" }
+            ?? "Auto · match the other Mac's screen exactly", DisplayChoice.auto)
         resolutionMenu.addItem(.separator())
-        header("HiDPI (sharp)")
-        for c in DisplayChoice.hiDPIPresets { add(c.title, c.id) }
+        header(receiverScreen == nil ? "HiDPI (sizes follow the other Mac's screen once connected)" : "HiDPI (sharp), relative to the other Mac's screen")
+        for c in DisplayChoice.hiDPIPresets(receiverScreen) { add(c.title, c.id) }
         resolutionMenu.addItem(.separator())
         header("Low DPI")
-        for c in DisplayChoice.standardPresets { add(c.title, c.id) }
+        for c in DisplayChoice.lowDPIPresets(receiverScreen) { add(c.title, c.id) }
         resolutionMenu.addItem(.separator())
         let cc = DisplayChoice.customChoice(d)
         let customItem = NSMenuItem(title: modeID == DisplayChoice.custom
@@ -160,9 +238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             it.state = chromaID == id ? .on : .off
             sharpnessMenu.addItem(it)
         }
-        add("Auto · full colour if the iMac can decode it", ChromaMode.auto.rawValue)
+        add("Auto · full colour if the other Mac can decode it", ChromaMode.auto.rawValue)
         add("Full colour (4:4:4) · sharpest text", ChromaMode.full444.rawValue)
-        add("Standard (4:2:0) · lightest for the iMac", ChromaMode.standard420.rawValue)
+        add("Standard (4:2:0) · lightest for the other Mac", ChromaMode.standard420.rawValue)
         if let u = using444 {
             sharpnessMenu.addItem(.separator())
             let now = NSMenuItem(title: "Now: \(u ? "full colour 4:4:4" : "standard 4:2:0")\(chromaNote.map { " (\($0))" } ?? "")",
@@ -185,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert()
         a.messageText = "Custom display size"
-        a.informativeText = "The size the iMac's screen will look like, in points. With HiDPI on, FiveK draws it with twice as many pixels each way (like the iMac's own 5K screen). Width 640–4096, height 360–2304."
+        a.informativeText = "The size the other Mac's screen will look like, in points. With HiDPI on, FiveK draws it with twice as many pixels each way, like a Retina screen. Width 640–4096, height 360–2304."
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 58))
         let wf = NSTextField(frame: NSRect(x: 0, y: 30, width: 110, height: 24)); wf.stringValue = "\(cc.pointsW)"
         let x = NSTextField(labelWithString: "×"); x.frame = NSRect(x: 118, y: 33, width: 20, height: 20)
@@ -212,9 +290,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildResolutionMenu()
         let c = DisplayChoice.resolve(id, receiver: receiverScreen)
         print("Resolution set to \(id): \(c.pointsW)x\(c.pointsH)\(c.hiDPI ? " HiDPI" : "")")
-        // Not streaming yet: it's used when the iMac connects. Streaming: switch now, on the same connection.
-        if streaming, let s = self.sender {
-            s.reconfigure { [weak self] rs in await self?.makeDisplay(DisplayChoice.resolve(id, receiver: rs)) }
+        // Not streaming yet: it's used when the other Mac connects. Streaming: switch now, on the same connection.
+        if streaming, !mirroring, let s = self.sender {
+            s.reconfigure { [weak self] rs in await self?.prepareTarget(rs) }
         }
     }
 
@@ -243,7 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 throw Failure("FiveK needs Screen Recording permission. Turn it on in System Settings > Privacy & Security > Screen & System Audio Recording, then open FiveK again.")
             }
 
-            // 2. Stream. The virtual display is created only once the iMac has connected (and has reported
+            // 2. Stream. The virtual display is created only once the other Mac has connected (and has reported
             //    its screen, for Auto), so windows never jump onto a display nobody can see.
             var cfg = SenderConfig()
             if let h = d.string(forKey: "Host"), !h.isEmpty { cfg.host = h }
@@ -255,8 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let s = Sender(cfg)
             s.prepareDisplay = { [weak self] rs in
                 guard let self = self else { return nil }
-                let id = await MainActor.run { self.modeID }
-                let r = await self.makeDisplay(DisplayChoice.resolve(id, receiver: rs))
+                let r = await self.prepareTarget(rs)
                 await MainActor.run { self.streaming = r != nil }
                 return r
             }
@@ -277,14 +354,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Creates the virtual display, or resizes the existing one in place (windows on it stay put).
     @MainActor
     func makeDisplay(_ c: DisplayChoice) async -> CGDirectDisplayID? {
-        setStatus("Setting up the \(c.pixelW)×\(c.pixelH) display…")
+        setStatus("Setting up a \(c.pointsW)×\(c.pointsH)\(c.hiDPI ? " HiDPI" : "") display…")
         if let v = virtualDisplay, v.reconfigure(pointsW: c.pointsW, pointsH: c.pointsH, hiDPI: c.hiDPI) {
             // resized in place
         } else {
             virtualDisplay = nil   // too small for the new size (or none yet): make a new one
             // Room for every preset, so later switches happen in place.
+            // Room for every preset (the largest is 1.25x the other Mac's size, HiDPI), so later switches happen
+            // in place; physical size as measured by the other Mac when it reported one.
+            let b = DisplayChoice.base(receiverScreen)
+            let mm = receiverScreen.flatMap { $0.mmW > 0 && $0.mmH > 0 ? CGSize(width: $0.mmW, height: $0.mmH) : nil }
             guard let v = VirtualDisplay(pointsW: c.pointsW, pointsH: c.pointsH, hiDPI: c.hiDPI,
-                                         maxPixelW: max(6400, c.pixelW), maxPixelH: max(3600, c.pixelH)) else {
+                                         maxPixelW: max(c.pixelW, DisplayChoice.even(Double(b.w) * 2.5)),
+                                         maxPixelH: max(c.pixelH, DisplayChoice.even(Double(b.h) * 2.5)),
+                                         sizeMM: mm) else {
                 print("CGVirtualDisplay creation failed"); return nil
             }
             virtualDisplay = v

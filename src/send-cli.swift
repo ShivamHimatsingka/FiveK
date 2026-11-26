@@ -26,8 +26,12 @@ enum SendCLI {
         let s = Sender(cfg)
         var vd: VirtualDisplay?
         if cfg.displayID == nil {
-            s.prepareDisplay = { _ in
-                await MainActor.run { vd = VirtualDisplay() }
+            s.prepareDisplay = { rs in
+                // Match the receiver's measured screen (or 2560x1440 HiDPI if it didn't report one).
+                await MainActor.run {
+                    vd = VirtualDisplay(pointsW: rs?.pointsW ?? 2560, pointsH: rs?.pointsH ?? 1440, hiDPI: rs?.hiDPI ?? true,
+                                        sizeMM: rs.flatMap { $0.mmW > 0 ? CGSize(width: $0.mmW, height: $0.mmH) : nil })
+                }
                 guard let v = vd, await v.waitUntilReady() else { return nil }
                 return v.displayID
             }

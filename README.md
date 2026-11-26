@@ -23,6 +23,10 @@ either: neither supports a 2020 iMac as a display for another Mac.
 FiveK streams the picture itself: hardware HEVC encoding on the MacBook, hardware decoding on the iMac, at the
 full 5120×2880. Text is as crisp as the iMac's own display.
 
+It isn't limited to that pair: FiveK works between **any two Macs**. When they connect, the receiver reports
+its measured screen (pixels, points, HiDPI, physical size), and FiveK sizes everything from that. You can also
+**mirror** the sending Mac's screen instead of extending it.
+
 |  | AirPlay "Extend" | **FiveK** |
 |---|---|---|
 | Resolution on a 5K iMac | ~1920×1080, upscaled | **5120×2880** (2560×1440 HiDPI) |
@@ -72,33 +76,42 @@ FiveK display in **System Settings > Displays > Arrange** while streaming. macOS
 | **Start** | Open FiveK (from the Dock, Spotlight or Launchpad) |
 | **Stop from the MacBook** | Click FiveK again, or use the menu bar icon > **Stop** |
 | **Stop from the iMac** | Press **Esc** or **⌘Q**. Or move the iMac's mouse and click **Disconnect** |
+| **Extend or mirror** | Menu bar icon > **Extend** (second screen) or **Mirror** (show this Mac's screen) |
 | **Change the resolution** | Menu bar icon > **Display Resolution** (applies instantly, while streaming) |
 | **Change text sharpness** | Menu bar icon > **Text Sharpness** (full colour 4:4:4 or standard 4:2:0) |
 | **See live stats** | Click the menu bar icon (fps, Mbps, encode and network times) |
 
+### Extend or mirror
+
+- **Extend** (default): the other Mac becomes a second screen. FiveK adds a virtual display called **FiveK**,
+  sized from the receiver's measurements, and removes it when you stop.
+- **Mirror**: the other Mac shows exactly what's on this Mac's own screen, at this Mac's measured resolution.
+  If the two screens have different shapes (a 16:10 MacBook on a 16:9 iMac, say), the receiver adds black bars
+  rather than stretching the picture.
+
+You can switch between them mid-stream. Display Resolution only applies to Extend.
+
 ### Display resolution
 
-The default is **5K**: the iMac looks like 2560×1440, drawn with 5120×2880 pixels, exactly like its own screen.
-You can switch at any time from the menu bar, even mid-stream. The virtual display is resized in place, so your
-windows stay where they are.
+The default is **Auto**: the virtual display matches the other Mac's screen exactly, pixel for pixel, using the
+size and HiDPI scale it reports. On a 5K iMac that's 2560×1440 HiDPI (5120×2880 pixels). The other sizes are
+steps relative to the receiver's own screen, so they keep its shape on any Mac:
 
-| Option | Looks like | Pixels streamed | Notes |
-|---|---|---|---|
-| **Auto** | the iMac's own setting | the iMac's native pixels | Pixel-for-pixel match: the sharpest result |
-| Most space | 3200×1800 | 6400×3600 | More room than the iMac's native size; scaled down on the iMac |
-| More space | 2880×1620 | 5760×3240 | Like the iMac's own "More Space" setting |
-| **5K** (default) | 2560×1440 | 5120×2880 | What a 5K iMac shows natively |
-| | 2304×1296 | 4608×2592 | |
-| Larger text | 2048×1152 | 4096×2304 | Bigger UI, still HiDPI |
-| 4K | 1920×1080 | 3840×2160 | Big UI; encodes faster, so it's smoother |
-| | 1600×900 | 3200×1800 | |
-| Largest text | 1280×720 | 2560×1440 | |
-| Low DPI | 2560×1440 or 1920×1080 | same | Much faster, visibly softer |
-| **Custom…** | any size you type | ×2 with HiDPI on | Width 640–4096, height 360–2304 |
+| Option | Size relative to the other Mac's screen | On a 5K iMac |
+|---|---|---|
+| **Auto** (default) | exactly its screen | 2560×1440 HiDPI (5120×2880) |
+| Most space | 1.25× | looks like 3200×1800 (6400×3600) |
+| More space | 1.125× | looks like 2880×1620 |
+| Native | 1× HiDPI | looks like 2560×1440 |
+| Larger text | 0.9×, 0.8×, 0.75×, 0.625× | e.g. 2048×1152, 1920×1080 |
+| Largest text | 0.5× | looks like 1280×720 |
+| Low DPI | 1× or 0.75× at 1x scale | 2560×1440 or 1920×1080 pixels; much faster, visibly softer |
+| **Custom…** | any size you type | width 640–4096, height 360–2304 points, HiDPI on or off |
 
-Sizes other than the iMac's own are resampled to fill its screen, so for the very sharpest picture use **Auto**
-(or 5K on a 5K iMac). If the stream and the iMac's screen don't match, the menu says so. **Auto** needs FiveK
-Receiver 0.2 or later on the iMac; with an older receiver it falls back to 5K.
+Until a receiver has connected (or with a receiver older than 0.3), sizes are based on 2560×1440. Anything
+other than Auto is resampled on the receiver, so Auto is the sharpest; the menu warns when the stream and the
+receiver's screen don't match. Changes apply instantly, and the virtual display is resized in place, so windows
+stay where they are.
 
 ### Text sharpness
 
@@ -127,12 +140,12 @@ FiveK wakes it.
 ```mermaid
 flowchart LR
     subgraph MacBook["MacBook · FiveK.app (menu bar)"]
-        BD["FiveK virtual display<br/>2560×1440 HiDPI = 5120×2880 px"] --> SCK["ScreenCaptureKit<br/>only when the screen changes"]
+        BD["FiveK virtual display (Extend)<br/>sized from the receiver's measured screen<br/>or this Mac's own screen (Mirror)"] --> SCK["ScreenCaptureKit<br/>only when the screen changes"]
         SCK --> VT["VideoToolbox<br/>hardware HEVC"]
-        CUR["Cursor position + shape<br/>~120×/s"]
+        CUR["Cursor position + shape<br/>on every mouse move, over UDP"]
     end
     subgraph iMac["iMac · FiveK Receiver"]
-        LD["launchd<br/>listens on :5959, Bonjour"] -->|starts on connect| RX["Hardware HEVC decode<br/>fullscreen 5120×2880"]
+        LD["launchd<br/>listens on :5959, Bonjour"] -->|starts on connect| RX["Hardware HEVC decode<br/>fullscreen, aspect-correct"]
         OV["Cursor overlay"]
     end
     VT -- "TCP over Wi-Fi" --> RX
@@ -170,7 +183,8 @@ Every message is `[type u8][length u32 big-endian][payload]`.
 
 Back-channel, iMac → MacBook: `0x01` acknowledges a frame; `0x4B` (`K`) requests a keyframe; `0x52` (`R`) plus
 `[pointsW][pointsH][pixelW][pixelH]` (u16) reports the iMac's screen and `0x43` (`C`) plus `[flags u8]` its
-capabilities (1 = decodes 4:4:4, 2 = in hardware, 4 = takes the cursor over UDP), both once on connect;
+capabilities (1 = decodes 4:4:4, 2 = in hardware, 4 = takes the cursor over UDP), and `0x50` (`P`) plus
+`[mmW][mmH]` (u16) its physical screen size, all once on connect;
 `0x46` (`F`) asks for standard 4:2:0 because full colour isn't working.
 
 Cursor over UDP, MacBook → iMac port 5959: 11-byte datagrams `['F' '5'][seq u32][x u16][y u16][visible u8]`.
@@ -196,7 +210,8 @@ Copy the receiver to the iMac and open it once, as in Quick start.
 All optional, on the MacBook:
 
 ```bash
-defaults write com.fivek.sender DisplayMode auto                   # same as the menu (auto, 5k, 4k, custom, …)
+defaults write com.fivek.sender DisplayMode auto                   # same as the menu (auto, s125…s050, l100, l075, custom)
+defaults write com.fivek.sender ScreenMode mirror                  # extend (default) or mirror
 defaults write com.fivek.sender Chroma 444                         # same as Text Sharpness: auto, 444, 420
 defaults write com.fivek.sender MaxQP -int 24                      # quality floor; lower = sharper, bigger frames
 defaults write com.fivek.sender Mbps -int 100                      # lower if Wi-Fi stutters
@@ -238,6 +253,7 @@ make-signing-cert.sh        creates the local "FiveK Local Signing" certificate
 tools/encbench.swift        HEVC encoder speed benchmark (5K/4K, each rate-control mode)
 tools/qualitybench.swift    HEVC picture-quality benchmark on 5K text (4:2:0 vs 4:4:4, quality settings)
 tools/airplay-native.swift  lists or sets display modes with CoreGraphics (diagnostics)
+tools/fakereceiver.py       stand-in receiver for testing the sender on one Mac
 ```
 
 ## Roadmap
