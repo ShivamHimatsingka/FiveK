@@ -102,7 +102,7 @@ it itself, so the set returned "Failed." harmlessly. Fixes above (cursor overlay
 refinement, 100 Mbps) are NOT yet tested on the iMac. Stats line now shows enc/net ms.
 
 ## Status
-Working end to end on the real hardware (MacBook Air M5 -> 2020 iMac over Wi-Fi), released as v0.1.0 and v0.2.0 (v0.3.0 built, not yet released)
+Working end to end on the real hardware (MacBook Air M5 -> 2020 iMac over Wi-Fi), released as v0.1.0, v0.2.0 and v0.3.0 (2026-11-27: any two Macs, mirror, 4:4:4, UDP cursor)
 (GitHub release with FiveK.zip + FiveK-Receiver.zip). Commits are authored by Shivam Himatsingka only
 (no Claude co-author trailers; history was rewritten once to remove them).
 Virtual display verified locally 2026-11-23 with a fake receiver (scratch script acking frames on 127.0.0.1):
